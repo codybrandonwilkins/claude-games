@@ -1,0 +1,1855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dungeon Depths</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a12;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden;font-family:monospace}
+canvas{display:block;image-rendering:pixelated;cursor:default}
+</style>
+</head>
+<body>
+<canvas id="gc" width="800" height="600"></canvas>
+<script>
+// ===== DUNGEON DEPTHS =====
+const canvas=document.getElementById('gc');
+const ctx=canvas.getContext('2d');
+const W=800,H=600;
+const TILE=32,COLS=25,ROWS=16;
+const HUD_TOP=40,HUD_BOT=120;
+
+// ===== COLORS =====
+const C={
+  wall:'#8B7355',floor:'#5A5050',floor2:'#6B6060',torch:'#E8842A',gold:'#FFD700',
+  shadow:'#1A1A2E',warrior:'#4A7BCC',rogue:'#5DAE5D',mage:'#8855CC',cleric:'#E8DCC8',
+  skeleton:'#E0D8C8',slime:'#66CC44',bat:'#6644AA',goblin:'#7A8B3C',wraith:'#88CCDD',
+  dragon:'#CC3333',hp:'#DD3333',hpBg:'#551111',hudBg:'rgba(0,0,0,0.7)',
+  card:'#F0E6D0',cardBorder:'#5A4030',cardText:'#3A2A1A',white:'#FFFFFF',
+  black:'#000000',textGold:'#FFD700'
+};
+
+// ===== GAME STATE =====
+let gameState='title'; // title,charSelect,upgrades,instructions,exploration,combat,shop,abilityPickup,pause,gameOver,victory,floorTransition
+let prevState='';
+let frameCount=0;
+let transitionAlpha=1;
+let cheatFlashTimer=0; // for CODY cheat code flash text
+let cheatCooldown=0; // prevent rapid re-triggers
+
+// ===== INPUT =====
+const keys={};
+const mouse={x:0,y:0,clicked:false,down:false};
+document.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;e.preventDefault()});
+document.addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false});
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top});
+canvas.addEventListener('mousedown',()=>{mouse.down=true;mouse.clicked=true});
+canvas.addEventListener('mouseup',()=>{mouse.down=false});
+
+function consumeClick(){if(mouse.clicked&&!isTransitioning()){mouse.clicked=false;return true}return false}
+function keyPressed(k){if(keys[k]){keys[k]=false;return true}return false}
+
+// ===== AUDIO =====
+let audioCtx=null;
+function initAudio(){if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)()}
+function playSound(type){
+  if(!audioCtx)return;
+  const now=audioCtx.currentTime;
+  const g=audioCtx.createGain();
+  g.connect(audioCtx.destination);
+  switch(type){
+    case'attack':{const n=audioCtx.createBufferSource();const buf=audioCtx.createBuffer(1,2000,audioCtx.sampleRate);const d=buf.getChannelData(0);for(let i=0;i<2000;i++)d[i]=(Math.random()*2-1)*Math.max(0,1-i/2000);n.buffer=buf;n.connect(g);g.gain.setValueAtTime(0.3,now);g.gain.exponentialRampToValueAtTime(0.01,now+0.1);n.start(now);n.stop(now+0.1);break}
+    case'hit':{const o=audioCtx.createOscillator();o.type='sine';o.frequency.setValueAtTime(150,now);o.frequency.exponentialRampToValueAtTime(80,now+0.15);o.connect(g);g.gain.setValueAtTime(0.3,now);g.gain.exponentialRampToValueAtTime(0.01,now+0.15);o.start(now);o.stop(now+0.15);break}
+    case'gold':{const o=audioCtx.createOscillator();o.type='sine';o.frequency.setValueAtTime(800,now);o.frequency.exponentialRampToValueAtTime(1200,now+0.1);o.connect(g);g.gain.setValueAtTime(0.2,now);g.gain.exponentialRampToValueAtTime(0.01,now+0.15);o.start(now);o.stop(now+0.15);break}
+    case'potion':{const o=audioCtx.createOscillator();o.type='sine';o.frequency.setValueAtTime(300,now);o.frequency.setValueAtTime(400,now+0.05);o.frequency.setValueAtTime(350,now+0.1);o.frequency.setValueAtTime(450,now+0.15);o.connect(g);g.gain.setValueAtTime(0.15,now);g.gain.exponentialRampToValueAtTime(0.01,now+0.25);o.start(now);o.stop(now+0.25);break}
+    case'ability':{const o=audioCtx.createOscillator();o.type='triangle';o.frequency.setValueAtTime(500,now);o.frequency.exponentialRampToValueAtTime(700,now+0.08);o.connect(g);g.gain.setValueAtTime(0.15,now);g.gain.exponentialRampToValueAtTime(0.01,now+0.12);o.start(now);o.stop(now+0.12);break}
+    case'door':{const n=audioCtx.createBufferSource();const buf=audioCtx.createBuffer(1,8000,audioCtx.sampleRate);const d=buf.getChannelData(0);for(let i=0;i<8000;i++)d[i]=(Math.random()*2-1)*Math.min(i/2000,1)*Math.max(0,1-i/8000)*0.3;n.buffer=buf;const f=audioCtx.createBiquadFilter();f.type='lowpass';f.frequency.value=800;n.connect(f);f.connect(g);g.gain.setValueAtTime(0.2,now);g.gain.exponentialRampToValueAtTime(0.01,now+0.3);n.start(now);n.stop(now+0.3);break}
+    case'chest':{const o1=audioCtx.createOscillator();o1.type='sine';o1.frequency.setValueAtTime(523,now);const o2=audioCtx.createOscillator();o2.type='sine';o2.frequency.setValueAtTime(659,now+0.1);const o3=audioCtx.createOscillator();o3.type='sine';o3.frequency.setValueAtTime(784,now+0.2);[o1,o2,o3].forEach((o,i)=>{const gi=audioCtx.createGain();o.connect(gi);gi.connect(audioCtx.destination);gi.gain.setValueAtTime(0,now);gi.gain.setValueAtTime(0.15,now+i*0.1);gi.gain.exponentialRampToValueAtTime(0.01,now+i*0.1+0.2);o.start(now+i*0.1);o.stop(now+i*0.1+0.2)});break}
+    case'damage':{const n=audioCtx.createBufferSource();const buf=audioCtx.createBuffer(1,4000,audioCtx.sampleRate);const d=buf.getChannelData(0);for(let i=0;i<4000;i++)d[i]=(Math.random()*2-1)*Math.max(0,1-i/4000);n.buffer=buf;n.connect(g);const o=audioCtx.createOscillator();o.type='sine';o.frequency.value=100;const g2=audioCtx.createGain();o.connect(g2);g2.connect(audioCtx.destination);g2.gain.setValueAtTime(0.2,now);g2.gain.exponentialRampToValueAtTime(0.01,now+0.15);g.gain.setValueAtTime(0.25,now);g.gain.exponentialRampToValueAtTime(0.01,now+0.15);n.start(now);n.stop(now+0.15);o.start(now);o.stop(now+0.15);break}
+    case'kill':{const o=audioCtx.createOscillator();o.type='sawtooth';o.frequency.setValueAtTime(400,now);o.frequency.exponentialRampToValueAtTime(100,now+0.3);o.connect(g);g.gain.setValueAtTime(0.15,now);g.gain.exponentialRampToValueAtTime(0.01,now+0.3);o.start(now);o.stop(now+0.3);break}
+    case'boss':{const o=audioCtx.createOscillator();o.type='sine';o.frequency.setValueAtTime(60,now);o.frequency.exponentialRampToValueAtTime(40,now+0.8);o.connect(g);g.gain.setValueAtTime(0.4,now);g.gain.exponentialRampToValueAtTime(0.01,now+0.8);o.start(now);o.stop(now+0.8);break}
+    case'heal':{for(let i=0;i<4;i++){const o=audioCtx.createOscillator();o.type='sine';o.frequency.value=600+i*200;const gi=audioCtx.createGain();o.connect(gi);gi.connect(audioCtx.destination);gi.gain.setValueAtTime(0,now);gi.gain.setValueAtTime(0.1,now+i*0.08);gi.gain.exponentialRampToValueAtTime(0.01,now+i*0.08+0.15);o.start(now+i*0.08);o.stop(now+i*0.08+0.15)}break}
+    case'crit':{const n=audioCtx.createBufferSource();const buf=audioCtx.createBuffer(1,3000,audioCtx.sampleRate);const d=buf.getChannelData(0);for(let i=0;i<3000;i++)d[i]=(Math.random()*2-1)*Math.max(0,1-i/3000);n.buffer=buf;n.connect(g);g.gain.setValueAtTime(0.4,now);g.gain.exponentialRampToValueAtTime(0.01,now+0.1);n.start(now);n.stop(now+0.1);break}
+    case'flee':{const o=audioCtx.createOscillator();o.type='sine';o.frequency.setValueAtTime(400,now);o.frequency.exponentialRampToValueAtTime(200,now+0.2);o.connect(g);g.gain.setValueAtTime(0.2,now);g.gain.exponentialRampToValueAtTime(0.01,now+0.25);o.start(now);o.stop(now+0.25);break}
+    case'cooldown':{const o=audioCtx.createOscillator();o.type='sine';o.frequency.setValueAtTime(300,now);o.frequency.setValueAtTime(350,now+0.05);o.connect(g);g.gain.setValueAtTime(0.08,now);g.gain.exponentialRampToValueAtTime(0.01,now+0.08);o.start(now);o.stop(now+0.08);break}
+  }
+}
+
+// ===== PARTICLES =====
+let particles=[];
+function addParticle(x,y,color,count=5,speed=2,life=30){
+  for(let i=0;i<count;i++){
+    const a=Math.random()*Math.PI*2;
+    particles.push({x,y,vx:Math.cos(a)*speed*(0.5+Math.random()),vy:Math.sin(a)*speed*(0.5+Math.random()),life,maxLife:life,color,size:2+Math.random()*3});
+  }
+}
+function addRisingParticle(x,y,color,count=5){
+  for(let i=0;i<count;i++){
+    particles.push({x:x-8+Math.random()*16,y,vx:(Math.random()-0.5)*0.5,vy:-1-Math.random()*2,life:30+Math.random()*20,maxLife:50,color,size:3+Math.random()*2});
+  }
+}
+function updateParticles(){
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.x+=p.vx;p.y+=p.vy;p.life--;
+    if(p.life<=0)particles.splice(i,1);
+  }
+}
+function drawParticles(){
+  for(const p of particles){
+    const a=p.life/p.maxLife;
+    ctx.globalAlpha=a;
+    ctx.fillStyle=p.color;
+    ctx.fillRect(p.x-p.size/2,p.y-p.size/2,p.size,p.size);
+  }
+  ctx.globalAlpha=1;
+}
+
+// ===== FLOATING TEXT =====
+let floatingTexts=[];
+function addFloatingText(x,y,text,color='#fff'){
+  floatingTexts.push({x,y,text,color,life:60,maxLife:60});
+}
+function updateFloatingTexts(){
+  for(let i=floatingTexts.length-1;i>=0;i--){
+    floatingTexts[i].y-=1;floatingTexts[i].life--;
+    if(floatingTexts[i].life<=0)floatingTexts.splice(i,1);
+  }
+}
+function drawFloatingTexts(){
+  for(const ft of floatingTexts){
+    const a=ft.life/ft.maxLife;
+    ctx.globalAlpha=a;ctx.fillStyle=ft.color;ctx.font='bold 14px monospace';
+    ctx.textAlign='center';ctx.fillText(ft.text,ft.x,ft.y);
+  }
+  ctx.globalAlpha=1;ctx.textAlign='left';
+}
+
+// ===== SCREEN SHAKE =====
+let shake={x:0,y:0,intensity:0,duration:0};
+function addShake(intensity,duration){shake.intensity=intensity;shake.duration=duration}
+function updateShake(){
+  if(shake.duration>0){shake.x=(Math.random()-0.5)*shake.intensity*2;shake.y=(Math.random()-0.5)*shake.intensity*2;shake.duration--}
+  else{shake.x=0;shake.y=0}
+}
+
+// ===== META PROGRESSION =====
+let meta={legacyPoints:0,gold:0,hpBonus:0,dmgBonus:0,startPotion:false,startRareAbility:false,rogueUnlocked:false,mageUnlocked:false,clericUnlocked:false,totalRuns:0};
+function saveMeta(){try{localStorage.setItem('dungeonDepths',JSON.stringify(meta))}catch(e){}}
+function loadMeta(){try{const d=localStorage.getItem('dungeonDepths');if(d)meta=JSON.parse(d)}catch(e){}}
+loadMeta();
+
+// ===== ABILITY DEFINITIONS =====
+const ABILITY_DEFS={
+  // Default swappable abilities
+  strike:{name:'Strike',desc:'Deal 8 damage',type:'attack',damage:8,target:'single',cooldown:0,color:'#cc4444'},
+  bandage:{name:'Bandage',desc:'Heal 15 HP',type:'heal',healing:15,cooldown:2,color:'#44cc44'},
+  // Warrior locked
+  shieldSlam:{name:'Shield Slam',desc:'10 dmg + block 8',type:'attack',damage:10,block:8,target:'single',cooldown:2,color:'#6688aa'},
+  recklessSwing:{name:'Reckless Swing',desc:'22 dmg, take 5',type:'attack',damage:22,selfDamage:5,target:'single',cooldown:3,color:'#cc2222'},
+  // Rogue locked
+  backstab:{name:'Backstab',desc:'15 dmg (crit if 1st)',type:'attack',damage:15,target:'single',cooldown:2,color:'#22cc88',firstCrit:true},
+  smokeBomb:{name:'Smoke Bomb',desc:'Dodge next 2 attacks',type:'defense',dodgeCharges:2,cooldown:4,color:'#88ccdd'},
+  // Mage locked
+  arcaneBlast:{name:'Arcane Blast',desc:'12 dmg to ALL',type:'attack',damage:12,target:'all',cooldown:3,color:'#8855cc'},
+  meteor:{name:'Meteor',desc:'30 damage',type:'attack',damage:30,target:'single',cooldown:5,color:'#ee4400'},
+  // Cleric locked
+  holySmite:{name:'Holy Smite',desc:'10 dmg, heal 8',type:'attack',damage:10,healing:8,target:'single',cooldown:2,color:'#eecc44'},
+  divineShield:{name:'Divine Shield',desc:'Block 25 damage',type:'defense',block:25,cooldown:4,color:'#eedd88'},
+  // Findable abilities
+  powerStrike:{name:'Power Strike',desc:'Deal 16 damage',type:'attack',damage:16,target:'single',cooldown:1,color:'#dd5555'},
+  fireball:{name:'Fireball',desc:'20 dmg to ALL',type:'attack',damage:20,target:'all',cooldown:4,color:'#ee6622'},
+  poisonStab:{name:'Poison Stab',desc:'8 dmg +3/turn 3t',type:'attack',damage:8,poison:{dmg:3,turns:3},target:'single',cooldown:2,color:'#88aa22'},
+  lightningBolt:{name:'Lightning Bolt',desc:'Deal 25 damage',type:'attack',damage:25,target:'single',cooldown:3,color:'#aaccff'},
+  drainLife:{name:'Drain Life',desc:'12 dmg, heal 12',type:'attack',damage:12,healing:12,target:'single',cooldown:3,color:'#aa44aa'},
+  warCry:{name:'War Cry',desc:'+5 dmg for 3 turns',type:'buff',buffDmg:5,buffTurns:3,cooldown:4,color:'#cc8844'},
+  ironSkin:{name:'Iron Skin',desc:'Block 20 damage',type:'defense',block:20,cooldown:3,color:'#8899aa'},
+  doubleStrike:{name:'Double Strike',desc:'Hit twice for 10',type:'attack',damage:10,hits:2,target:'single',cooldown:2,color:'#cc6688'},
+};
+
+// Findable ability pool
+const FINDABLE_ABILITIES=['powerStrike','fireball','poisonStab','lightningBolt','drainLife','warCry','ironSkin','doubleStrike'];
+
+function makeAbility(id){return{id,...ABILITY_DEFS[id],currentCD:0}}
+
+// ===== CHARACTER DEFINITIONS =====
+const CHARACTERS=[
+  {id:'warrior',name:'Warrior',color:C.warrior,hp:100,atkBonus:2,passive:'+5 max HP/floor',
+   locked:['shieldSlam','recklessSwing'],swap:['strike','bandage'],
+   unlocked:true,unlockText:''},
+  {id:'rogue',name:'Rogue',color:C.rogue,hp:70,critChance:0.15,passive:'First attack = crit',
+   locked:['backstab','smokeBomb'],swap:['strike','bandage'],
+   get unlocked(){return meta.rogueUnlocked},unlockText:'Reach Floor 3'},
+  {id:'mage',name:'Mage',color:C.mage,hp:60,spellBonus:4,passive:'Extra dmg on spells',
+   locked:['arcaneBlast','meteor'],swap:['strike','bandage'],
+   get unlocked(){return meta.mageUnlocked},unlockText:'Defeat the Dragon'},
+  {id:'cleric',name:'Cleric',color:C.cleric,hp:90,healBonus:5,passive:'Regen 3 HP/turn',
+   locked:['holySmite','divineShield'],swap:['strike','bandage'],
+   get unlocked(){return meta.clericUnlocked},unlockText:'Complete 5 runs'},
+];
+
+// ===== ENEMY DEFINITIONS =====
+const ENEMY_DEFS={
+  skeleton:{name:'Skeleton',hp:25,damage:8,color:C.skeleton,gold:[5,10],drops:[]},
+  slime:{name:'Slime',hp:15,damage:5,color:C.slime,gold:[3,7],drops:[{ability:'bandage',chance:0.2}]},
+  bat:{name:'Bat',hp:12,damage:6,color:C.bat,gold:[4,8],drops:[],hits:2},
+  goblin:{name:'Goblin Archer',hp:20,damage:10,color:C.goblin,gold:[8,15],drops:[{ability:'poisonStab',chance:0.15}],backRow:true},
+  wraith:{name:'Wraith',hp:30,damage:12,color:C.wraith,gold:[10,20],drops:[{ability:'lightningBolt',chance:0.1}],dodge:0.3,lifeDrain:5},
+  skeletonKnight:{name:'Skeleton Knight',hp:50,damage:12,color:C.skeleton,gold:[20,20],drops:[],boss:true,blockEvery:2,blockAmt:8},
+  giantBat:{name:'Giant Bat',hp:40,damage:5,color:C.bat,gold:[25,25],drops:[],boss:true,hits:3,guaranteedDrop:true},
+  goblinChief:{name:'Goblin Chief',hp:60,damage:14,color:C.goblin,gold:[30,30],drops:[],boss:true,summonTurn:3},
+  wraithLord:{name:'Wraith Lord',hp:70,damage:16,color:C.wraith,gold:[40,40],drops:[],boss:true,dodge:0.4,lifeDrain:8,guaranteedDrop:true},
+  dragon:{name:'Dragon',hp:120,damage:15,color:C.dragon,gold:[50,50],drops:[],boss:true,finalBoss:true},
+};
+const FLOOR_ENEMIES=[[],['skeleton','slime'],['skeleton','slime','bat'],['skeleton','bat','goblin'],['bat','goblin','wraith'],['goblin','wraith']];
+const FLOOR_BOSSES=[null,'skeletonKnight','giantBat','goblinChief','wraithLord','dragon'];
+
+// ===== PLAYER STATE =====
+let player={};
+let currentFloor=1;
+let currentRoomIdx=0;
+let floorRooms=[];
+let runStats={roomsCleared:0,enemiesDefeated:0,goldCollected:0};
+
+function initPlayer(charIdx){
+  const ch=CHARACTERS[charIdx];
+  const hpBonus=meta.hpBonus*5;
+  const maxHp=ch.hp+hpBonus;
+  player={
+    charIdx,charId:ch.id,name:ch.name,color:ch.color,
+    x:400,y:300,maxHp,hp:maxHp,
+    gold:0,potions:1+(meta.startPotion?1:0),maxPotions:5,
+    // Ability system: 4 slots [locked0, locked1, swap0, swap1]
+    abilities:[
+      makeAbility(ch.locked[0]),
+      makeAbility(ch.locked[1]),
+      meta.startRareAbility?makeAbility(FINDABLE_ABILITIES[Math.floor(Math.random()*FINDABLE_ABILITIES.length)]):makeAbility(ch.swap[0]),
+      makeAbility(ch.swap[1])
+    ],
+    atkBonus:ch.atkBonus||0,critChance:ch.critChance||0,spellBonus:ch.spellBonus||0,healBonus:ch.healBonus||0,
+    dmgBonus:meta.dmgBonus*2,
+    passive:ch.passive,charDef:ch,
+    blocking:0,dodgeCharges:0,
+    firstCombat:true,
+    floorsCleared:0,
+    buffDmg:0,buffTurns:0,
+    bobOffset:0,moveFrame:0,flashTimer:0,
+    speed:3
+  };
+  runStats={roomsCleared:0,enemiesDefeated:0,goldCollected:0};
+  currentFloor=1;
+  generateFloor();
+}
+
+// Gold helper — saves to meta (persistent) and player (run) immediately
+function addGold(amount){
+  player.gold+=amount;
+  meta.gold+=amount;
+  runStats.goldCollected+=amount;
+  saveMeta();
+}
+
+// ===== ROOM GENERATION =====
+// Guarantee: every room has >=1 exit (except boss), boss is always reachable
+function generateFloor(){
+  const numRooms=6+Math.floor(Math.random()*5);
+  floorRooms=[];
+
+  // Create rooms with types
+  for(let i=0;i<numRooms;i++){
+    let type;
+    if(i===0)type='combat';
+    else if(i===numRooms-1)type='boss';
+    else{
+      const r=Math.random();
+      if(r<0.50)type='combat';
+      else if(r<0.70)type='treasure';
+      else if(r<0.85)type='trap';
+      else if(r<0.95)type='rest';
+      else type='shop';
+    }
+    floorRooms.push({type,idx:i,children:[],cleared:false,entities:[],doors:[],traps:[],visited:false});
+  }
+
+  // Build guaranteed path from room 0 to boss (last room)
+  // Simple approach: create a main path, then add some branching
+  const mainPath=[];
+  const used=new Set();
+  // Guaranteed linear path
+  for(let i=0;i<numRooms-1;i++){
+    floorRooms[i].children.push(i+1);
+  }
+  // Add some extra connections for branching (skip some rooms)
+  for(let i=0;i<numRooms-2;i++){
+    if(Math.random()<0.3&&i+2<numRooms){
+      if(!floorRooms[i].children.includes(i+2)){
+        floorRooms[i].children.push(i+2);
+      }
+    }
+  }
+
+  // Now populate room contents
+  for(let i=0;i<numRooms;i++){
+    populateRoom(floorRooms[i]);
+  }
+
+  currentRoomIdx=0;
+  enterRoom(0);
+}
+
+function populateRoom(room){
+  const type=room.type;
+  if(type==='combat'){
+    const count=1+Math.floor(Math.random()*3);
+    const pool=FLOOR_ENEMIES[currentFloor];
+    for(let i=0;i<count;i++){
+      const eid=pool[Math.floor(Math.random()*pool.length)];
+      const def={...ENEMY_DEFS[eid]};
+      const scale=1+(currentFloor-1)*0.15;
+      room.entities.push({
+        type:'enemy',eid,name:def.name,
+        x:200+Math.random()*400,y:100+Math.random()*300,
+        hp:Math.floor(def.hp*scale),maxHp:Math.floor(def.hp*scale),
+        damage:Math.floor(def.damage*scale),color:def.color,
+        gold:def.gold,drops:def.drops,hits:def.hits||1,
+        dodge:def.dodge||0,lifeDrain:def.lifeDrain||0,
+        backRow:def.backRow||false,boss:false,
+        sway:0,size:TILE
+      });
+    }
+  } else if(type==='boss'){
+    const bid=FLOOR_BOSSES[currentFloor];
+    const def={...ENEMY_DEFS[bid]};
+    const isFinal=def.finalBoss;
+    room.entities.push({
+      type:'enemy',eid:bid,name:def.name,
+      x:400,y:200,
+      hp:def.hp,maxHp:def.hp,damage:def.damage,color:def.color,
+      gold:def.gold,drops:def.drops,hits:def.hits||1,
+      dodge:def.dodge||0,lifeDrain:def.lifeDrain||0,
+      boss:true,finalBoss:isFinal||false,
+      blockEvery:def.blockEvery||0,blockAmt:def.blockAmt||0,
+      summonTurn:def.summonTurn||0,guaranteedDrop:def.guaranteedDrop||false,
+      phase:1,turnCount:0,
+      sway:0,size:isFinal?64:48
+    });
+  } else if(type==='treasure'){
+    room.entities.push({type:'chest',x:350+Math.random()*100,y:250+Math.random()*60,opened:false,size:TILE});
+  } else if(type==='trap'){
+    const trapType=['spike','poison','arrow'][Math.floor(Math.random()*3)];
+    if(trapType==='spike'){
+      for(let i=0;i<4+Math.floor(Math.random()*4);i++){
+        room.traps.push({type:'spike',x:96+Math.floor(Math.random()*19)*TILE,y:80+Math.floor(Math.random()*12)*TILE,timer:Math.random()*90,active:false,w:TILE,h:TILE});
+      }
+    } else if(trapType==='poison'){
+      for(let i=0;i<2;i++){
+        room.traps.push({type:'poison',x:200+Math.random()*400,y:150+Math.random()*200,vx:(Math.random()-0.5)*1.5,vy:(Math.random()-0.5)*1.5,w:48,h:48});
+      }
+    } else {
+      for(let i=0;i<2+Math.floor(Math.random()*2);i++){
+        const side=Math.floor(Math.random()*4);
+        let tx,ty,tvx,tvy;
+        if(side===0){tx=32;ty=80+Math.random()*350;tvx=5;tvy=0}
+        else if(side===1){tx=W-32;ty=80+Math.random()*350;tvx=-5;tvy=0}
+        else if(side===2){tx=100+Math.random()*600;ty=HUD_TOP;tvx=0;tvy=5}
+        else{tx=100+Math.random()*600;ty=H-TILE;tvx=0;tvy=-5}
+        room.traps.push({type:'arrow',sx:tx,sy:ty,x:tx,y:ty,vx:tvx,vy:tvy,timer:60+Math.random()*60,cooldown:90+Math.random()*60,w:6,h:6,active:false});
+      }
+    }
+    room.cleared=true;
+  } else if(type==='rest'){
+    room.entities.push({type:'campfire',x:384,y:280,used:false,size:TILE});
+    room.cleared=true;
+  } else if(type==='shop'){
+    room.entities.push({type:'merchant',x:384,y:200,size:TILE});
+    // Shop sells abilities and potions
+    const shopAbilities=[...FINDABLE_ABILITIES].sort(()=>Math.random()-0.5).slice(0,2);
+    room.shopItems=[];
+    room.shopItems.push({type:'potion',name:'Health Potion',desc:'Restore 30 HP',price:15+currentFloor*5});
+    for(const aid of shopAbilities){
+      const ad=ABILITY_DEFS[aid];
+      room.shopItems.push({type:'ability',abilityId:aid,name:ad.name,desc:ad.desc+' (CD:'+ad.cooldown+')',price:20+currentFloor*8+(aid==='lightningBolt'||aid==='fireball'?20:0)});
+    }
+    room.cleared=true;
+  }
+}
+
+function enterRoom(idx){
+  currentRoomIdx=idx;
+  const room=floorRooms[idx];
+  room.visited=true;
+  player.x=400;player.y=400;
+  updateDoors();
+}
+
+function updateDoors(){
+  const room=floorRooms[currentRoomIdx];
+  room.doors=[];
+  if(room.cleared||room.type==='trap'||room.type==='rest'||room.type==='shop'||room.type==='treasure'){
+    const children=room.children;
+    for(let i=0;i<children.length;i++){
+      const side=i===0?'right':(i===1?'top':'bottom');
+      let dx,dy;
+      if(side==='right'){dx=W-20;dy=250+i*80}
+      else if(side==='top'){dx=350+i*100;dy=HUD_TOP+4}
+      else{dx=350+i*100;dy=H-HUD_BOT-4}
+      room.doors.push({x:dx,y:dy,w:32,h:40,targetRoom:children[i],side});
+    }
+  }
+}
+
+// ===== EXPLORATION UPDATE =====
+function updateExploration(){
+  const room=floorRooms[currentRoomIdx];
+  // Player movement
+  let dx=0,dy=0;
+  if(keys['w']||keys['arrowup'])dy=-player.speed;
+  if(keys['s']||keys['arrowdown'])dy=player.speed;
+  if(keys['a']||keys['arrowleft'])dx=-player.speed;
+  if(keys['d']||keys['arrowright'])dx=player.speed;
+  if(dx&&dy){dx*=0.707;dy*=0.707}
+
+  const nx=player.x+dx;const ny=player.y+dy;
+  if(nx>48&&nx<W-48)player.x=nx;
+  if(ny>HUD_TOP+32&&ny<H-16)player.y=ny;
+
+  player.bobOffset=Math.sin(frameCount*0.08)*2;
+  if(dx||dy)player.moveFrame=(player.moveFrame+0.15)%2;
+
+  if(player.flashTimer>0)player.flashTimer--;
+  if(cheatCooldown>0)cheatCooldown--;
+
+  // CODY cheat code — hold all 4 keys simultaneously
+  if(keys['c']&&keys['o']&&keys['d']&&keys['y']&&cheatCooldown<=0){
+    cheatCooldown=60; // prevent rapid re-triggers
+    cheatFlashTimer=60; // ~1 second at 60fps
+    if(currentFloor<5){
+      // Skip to next floor
+      player.floorsCleared++;
+      if(player.charId==='warrior')player.maxHp+=5;
+      if(currentFloor>=3&&!meta.rogueUnlocked){meta.rogueUnlocked=true;saveMeta()}
+      currentFloor++;
+      generateFloor();
+      playSound('door');
+    } else {
+      // On floor 5, skip directly to the boss room
+      const bossIdx=floorRooms.length-1;
+      if(currentRoomIdx!==bossIdx){
+        // Mark all rooms visited
+        for(const r of floorRooms)r.visited=true;
+        enterRoom(bossIdx);
+        playSound('door');
+      }
+    }
+  }
+
+  // Potion
+  if(keyPressed('q')&&player.potions>0&&player.hp<player.maxHp){
+    player.potions--;
+    player.hp=Math.min(player.maxHp,player.hp+30);
+    playSound('potion');
+    addRisingParticle(player.x,player.y,'#44cc44',8);
+    addFloatingText(player.x,player.y-20,'+30',C.hp);
+  }
+  // Pause
+  if(keyPressed('p')||keyPressed('escape')){prevState='exploration';gameState='pause'}
+
+  // Entity interactions
+  for(let i=room.entities.length-1;i>=0;i--){
+    const e=room.entities[i];
+    const dist=Math.hypot(player.x-e.x,player.y-e.y);
+    if(e.type==='enemy'&&dist<40){
+      initCombat(room);return;
+    }
+    if(e.type==='chest'&&!e.opened&&dist<36){
+      e.opened=true;
+      playSound('chest');
+      addParticle(e.x,e.y,C.gold,10,3,40);
+      const r=Math.random();
+      if(r<0.4){
+        const g=10+Math.floor(Math.random()*21)+currentFloor*5;
+        addGold(g);
+        addFloatingText(e.x,e.y-20,'+'+g+' gold',C.gold);
+      } else if(r<0.65){
+        if(player.potions<player.maxPotions){player.potions++;addFloatingText(e.x,e.y-20,'+1 Potion','#cc4444')}
+        else addFloatingText(e.x,e.y-20,'Potions full!','#aaa');
+      } else {
+        // Find a random ability
+        const pool=FINDABLE_ABILITIES.filter(a=>!player.abilities.some(pa=>pa.id===a));
+        if(pool.length>0){
+          pendingAbility=makeAbility(pool[Math.floor(Math.random()*pool.length)]);
+          gameState='abilityPickup';
+        } else {
+          const g=15+Math.floor(Math.random()*16)+currentFloor*5;
+          addGold(g);
+          addFloatingText(e.x,e.y-20,'+'+g+' gold',C.gold);
+        }
+      }
+    }
+    if(e.type==='campfire'&&!e.used&&dist<36){
+      e.used=true;
+      const amt=Math.floor(player.maxHp*0.25);
+      player.hp=Math.min(player.maxHp,player.hp+amt);
+      playSound('heal');
+      addRisingParticle(e.x,e.y,'#44cc44',10);
+      addFloatingText(e.x,e.y-20,'+'+amt+' HP','#44cc44');
+    }
+    if(e.type==='merchant'&&dist<40){
+      if(consumeClick())gameState='shop';
+    }
+  }
+
+  // Traps
+  for(const t of room.traps){
+    if(t.type==='spike'){
+      t.timer++;
+      t.active=Math.floor(t.timer/45)%2===1;
+      if(t.active&&Math.abs(player.x-t.x-16)<20&&Math.abs(player.y-t.y-16)<20){
+        damagePlayer(10);
+      }
+    } else if(t.type==='poison'){
+      t.x+=t.vx;t.y+=t.vy;
+      if(t.x<64||t.x>W-64)t.vx*=-1;
+      if(t.y<HUD_TOP+32||t.y>H-80)t.vy*=-1;
+      if(Math.abs(player.x-t.x-24)<30&&Math.abs(player.y-t.y-24)<30){
+        if(frameCount%20===0)damagePlayer(3);
+      }
+    } else if(t.type==='arrow'){
+      t.timer--;
+      if(t.timer<=0){
+        t.active=true;
+        t.x+=t.vx;t.y+=t.vy;
+        if(Math.abs(player.x-t.x)<16&&Math.abs(player.y-t.y)<16){
+          damagePlayer(8);t.active=false;t.x=t.sx;t.y=t.sy;t.timer=t.cooldown;
+        }
+        if(t.x<0||t.x>W||t.y<0||t.y>H){t.active=false;t.x=t.sx;t.y=t.sy;t.timer=t.cooldown}
+      }
+    }
+  }
+
+  // Door transitions
+  for(const door of room.doors){
+    if(Math.abs(player.x-door.x)<30&&Math.abs(player.y-door.y)<30){
+      playSound('door');
+      startTransition(()=>{
+        enterRoom(door.targetRoom);
+        runStats.roomsCleared++;
+      });
+      return;
+    }
+  }
+
+  if(player.hp<=0){endRun(false)}
+}
+
+function damagePlayer(amt){
+  if(player.flashTimer>0)return;
+  player.hp-=amt;
+  player.flashTimer=20;
+  addShake(3,12);
+  playSound('damage');
+  addFloatingText(player.x,player.y-20,'-'+amt,C.hp);
+  if(player.hp<=0)player.hp=0;
+}
+
+// ===== COMBAT SYSTEM =====
+let combatEnemies=[];
+let combatTurn='player';
+let combatLog='';
+let combatLogTimer=0;
+let targetMode=false;
+let targetAbility=null;
+let combatAnimTimer=0;
+let combatAnimType='';
+let enemyActing=false;
+let enemyActIdx=0;
+let enemyActTimer=0;
+let pendingAbility=null;
+let combatTurnNum=0;
+let playerActed=false;
+let abilityPulse=[-1,0]; // [index, timer] for button pulse animation
+
+function initCombat(room){
+  combatEnemies=[];
+  for(const e of room.entities){
+    if(e.type==='enemy'){
+      combatEnemies.push({...e,poison:0,poisonTurns:0,blockCD:0});
+    }
+  }
+  combatEnemies.sort((a,b)=>(a.backRow?1:0)-(b.backRow?1:0));
+  player.blocking=0;player.dodgeCharges=0;
+  player.buffDmg=0;player.buffTurns=0;
+  player.firstCombat=true;
+  combatTurn='player';combatTurnNum=0;
+  targetMode=false;targetAbility=null;
+  enemyActing=false;playerActed=false;
+  abilityPulse=[-1,0];
+  if(combatEnemies.some(e=>e.boss))playSound('boss');
+  gameState='combat';
+}
+
+function useAbility(abilityIdx,targetIdx){
+  const ability=player.abilities[abilityIdx];
+  if(ability.currentCD>0)return; // on cooldown
+
+  playSound('ability');
+  abilityPulse=[abilityIdx,15]; // pulse animation
+
+  let dmg=ability.damage||0;
+  // Apply bonuses
+  if(ability.type==='attack'){
+    dmg+=player.dmgBonus;
+    if(player.buffTurns>0)dmg+=player.buffDmg;
+    if(player.charId==='warrior'&&ability.id==='strike')dmg+=player.atkBonus;
+    if(player.charId==='mage'&&['arcaneBlast','meteor','fireball','lightningBolt'].includes(ability.id))dmg+=player.spellBonus;
+  }
+  let healing=ability.healing||0;
+  if(ability.type==='heal'&&player.charId==='cleric')healing+=player.healBonus;
+  if(ability.type==='attack'&&ability.healing&&player.charId==='cleric')healing+=player.healBonus;
+
+  // Crit check
+  let isCrit=false;
+  if(ability.type==='attack'&&ability.target==='single'){
+    let critChance=player.critChance;
+    if(ability.firstCrit&&player.firstCombat){critChance=1;player.firstCombat=false}
+    if(Math.random()<critChance){isCrit=true;dmg=Math.floor(dmg*1.5)}
+  }
+
+  if(ability.target==='all'){
+    for(const e of combatEnemies){
+      if(e.hp>0)applyDamageToEnemy(e,dmg,isCrit,ability);
+    }
+  } else if(ability.target==='single'&&targetIdx!=null){
+    const e=combatEnemies[targetIdx];
+    const hits=ability.hits||1;
+    for(let h=0;h<hits;h++){
+      if(e.hp>0)applyDamageToEnemy(e,dmg,isCrit&&h===0,ability);
+    }
+  }
+  if(ability.block){player.blocking+=ability.block;combatLog=ability.name+': blocking '+ability.block;combatLogTimer=120}
+  if(ability.dodgeCharges){player.dodgeCharges+=ability.dodgeCharges;combatLog='Dodge active! ('+player.dodgeCharges+' charges)';combatLogTimer=120}
+  if(ability.selfDamage){player.hp-=ability.selfDamage;addFloatingText(200,280,'-'+ability.selfDamage,'#cc44cc')}
+  if(ability.buffDmg){player.buffDmg=ability.buffDmg;player.buffTurns=ability.buffTurns;combatLog='War Cry! +'+ability.buffDmg+' dmg for '+ability.buffTurns+' turns';combatLogTimer=120}
+  if(healing>0){
+    player.hp=Math.min(player.maxHp,player.hp+healing);
+    playSound('heal');
+    addRisingParticle(200,300,'#44cc44',6);
+    addFloatingText(200,280,'+'+healing,'#44cc44');
+  }
+
+  // Set cooldown
+  ability.currentCD=ability.cooldown;
+
+  targetMode=false;targetAbility=null;
+
+  // Check for kills
+  let allDead=true;
+  for(const e of combatEnemies){
+    if(e.hp>0)allDead=false;
+    else if(!e.dead){
+      e.dead=true;runStats.enemiesDefeated++;
+      playSound('kill');
+      addParticle(550,200+combatEnemies.indexOf(e)*80,e.color,12,3,30);
+      const g=e.gold[0]+Math.floor(Math.random()*(e.gold[1]-e.gold[0]+1));
+      addGold(g);
+      addFloatingText(550,180+combatEnemies.indexOf(e)*80,'+'+g+'g',C.gold);
+      // Ability drops
+      for(const d of e.drops){
+        if(Math.random()<d.chance){
+          const pool=FINDABLE_ABILITIES.filter(a=>!player.abilities.some(pa=>pa.id===a));
+          if(d.ability&&!player.abilities.some(pa=>pa.id===d.ability)){
+            pendingAbility=makeAbility(d.ability);
+          } else if(pool.length>0){
+            pendingAbility=makeAbility(pool[Math.floor(Math.random()*pool.length)]);
+          }
+        }
+      }
+      if(e.guaranteedDrop&&!pendingAbility){
+        const pool=FINDABLE_ABILITIES.filter(a=>!player.abilities.some(pa=>pa.id===a));
+        if(pool.length>0)pendingAbility=makeAbility(pool[Math.floor(Math.random()*pool.length)]);
+      }
+    }
+  }
+  if(allDead){
+    setTimeout(()=>endCombat(true),600);
+    return;
+  }
+  playerActed=true;
+  combatAnimTimer=30;
+}
+
+function applyDamageToEnemy(e,dmg,isCrit,ability){
+  if(e.blockEvery&&e.blockCD===0){dmg=Math.max(0,dmg-e.blockAmt);e.blockCD=e.blockEvery}
+  if(Math.random()<e.dodge){
+    addFloatingText(550,180+combatEnemies.indexOf(e)*80,'DODGE!','#88ccdd');
+    return;
+  }
+  e.hp=Math.max(0,e.hp-dmg);
+  if(isCrit){playSound('crit');addFloatingText(550,160+combatEnemies.indexOf(e)*80,'CRIT!','#ffaa00')}
+  addFloatingText(550,180+combatEnemies.indexOf(e)*80,'-'+dmg,C.hp);
+  addParticle(550,200+combatEnemies.indexOf(e)*80,'#fff',4,2,15);
+  if(ability&&ability.poison){e.poison=ability.poison.dmg;e.poisonTurns=ability.poison.turns}
+}
+
+function enemyTurn(){
+  combatTurn='enemy';enemyActing=true;enemyActIdx=0;enemyActTimer=40;
+}
+
+function updateEnemyActions(){
+  if(!enemyActing)return;
+  enemyActTimer--;
+  if(enemyActTimer>0)return;
+
+  while(enemyActIdx<combatEnemies.length&&combatEnemies[enemyActIdx].hp<=0)enemyActIdx++;
+  if(enemyActIdx>=combatEnemies.length){
+    finishEnemyTurn();return;
+  }
+  const e=combatEnemies[enemyActIdx];
+
+  // Poison tick
+  if(e.poisonTurns>0){
+    e.hp=Math.max(0,e.hp-e.poison);e.poisonTurns--;
+    addFloatingText(550,180+enemyActIdx*80,'-'+e.poison,'#88aa22');
+    if(e.hp<=0){e.dead=true;runStats.enemiesDefeated++;playSound('kill')}
+  }
+
+  if(e.hp<=0){enemyActIdx++;enemyActTimer=20;return}
+
+  // Boss special: dragon phase check
+  if(e.finalBoss&&e.hp<=60&&e.phase===1){
+    e.phase=2;e.damage=20;
+    combatLog='Dragon enters Phase 2!';combatLogTimer=120;
+    addShake(5,24);
+  }
+
+  // Boss summon
+  if(e.summonTurn&&e.turnCount===e.summonTurn-1){
+    const summon={...ENEMY_DEFS.skeleton,type:'enemy',eid:'skeleton',hp:25,maxHp:25,
+      damage:8,color:C.skeleton,gold:[5,10],drops:[],hits:1,dodge:0,lifeDrain:0,
+      backRow:false,boss:false,dead:false,poison:0,poisonTurns:0,blockCD:0,size:TILE,sway:0};
+    combatEnemies.push(summon);
+    combatLog='Goblin Chief summons a Skeleton!';combatLogTimer=120;
+  }
+
+  let dmg=e.damage;
+  // Dragon fire breath
+  if(e.finalBoss){
+    const freq=e.phase===2?2:3;
+    if(e.turnCount>0&&e.turnCount%freq===0)dmg+=5;
+  }
+  if(e.blockCD>0)e.blockCD--;
+  e.turnCount=(e.turnCount||0)+1;
+
+  const hits=e.hits||1;
+  for(let h=0;h<hits;h++){
+    // Check dodge charges
+    if(player.dodgeCharges>0){
+      player.dodgeCharges--;
+      combatLog='Attack dodged! ('+player.dodgeCharges+' dodges left)';combatLogTimer=120;
+      addFloatingText(200,280,'DODGE!','#88ccdd');
+      continue;
+    }
+    let actualDmg=Math.max(0,dmg-player.blocking);
+    player.blocking=Math.max(0,player.blocking-dmg);
+    if(actualDmg>0){
+      player.hp-=actualDmg;
+      addShake(3,10);playSound('damage');
+      addFloatingText(200,280,'-'+actualDmg,C.hp);
+      combatLog=e.name+' attacks for '+actualDmg+'!';combatLogTimer=120;
+    } else {
+      combatLog='Blocked!';combatLogTimer=120;
+      addFloatingText(200,280,'BLOCKED!','#4488cc');
+    }
+    if(e.lifeDrain>0){e.hp=Math.min(e.maxHp,e.hp+e.lifeDrain);addFloatingText(550,180+enemyActIdx*80,'+'+e.lifeDrain,'#44cc44')}
+  }
+
+  // Boss phase2 armor
+  if(e.finalBoss&&e.phase===2){player.blocking=0}
+
+  if(player.hp<=0){player.hp=0;setTimeout(()=>endRun(false),800);enemyActing=false;return}
+
+  enemyActIdx++;
+  enemyActTimer=30;
+}
+
+function finishEnemyTurn(){
+  enemyActing=false;
+  combatTurn='player';
+  combatTurnNum++;
+  player.blocking=0;
+  // Don't reset dodgeCharges - they persist until used
+
+  // Tick cooldowns down
+  for(const a of player.abilities){
+    if(a.currentCD>0){a.currentCD--;if(a.currentCD===0)playSound('cooldown')}
+  }
+
+  // Buff timer
+  if(player.buffTurns>0){
+    player.buffTurns--;
+    if(player.buffTurns===0){player.buffDmg=0;combatLog='War Cry fades...';combatLogTimer=90}
+  }
+
+  // Cleric regen
+  if(player.charId==='cleric'){
+    player.hp=Math.min(player.maxHp,player.hp+3);
+    addFloatingText(200,280,'+3','#44cc44');
+  }
+
+  playerActed=false;
+}
+
+function endCombat(won){
+  const room=floorRooms[currentRoomIdx];
+  room.entities=room.entities.filter(e=>e.type!=='enemy');
+  room.cleared=true;
+  updateDoors();
+  gameState='exploration';
+
+  // Reset cooldowns after combat
+  for(const a of player.abilities)a.currentCD=0;
+
+  if(room.type==='boss'){
+    if(currentFloor===5){
+      meta.mageUnlocked=true;
+      endRun(true);return;
+    }
+    player.floorsCleared++;
+    if(player.charId==='warrior')player.maxHp+=5;
+    if(currentFloor>=3&&!meta.rogueUnlocked){meta.rogueUnlocked=true}
+    currentFloor++;
+    if(currentFloor<=5){
+      startTransition(()=>{
+        gameState='floorTransition';
+        floorTransitionTimer=120;
+      });
+    }
+    return;
+  }
+
+  if(pendingAbility){gameState='abilityPickup'}
+}
+
+// ===== COMBAT UPDATE =====
+function updateCombat(){
+  if(keyPressed('p')||keyPressed('escape')){prevState='combat';gameState='pause';return}
+  if(abilityPulse[1]>0)abilityPulse[1]--;
+  if(combatAnimTimer>0){combatAnimTimer--;if(combatAnimTimer===0&&playerActed)enemyTurn();return}
+  if(enemyActing){updateEnemyActions();return}
+  if(combatTurn!=='player')return;
+  if(combatLogTimer>0)combatLogTimer--;
+
+  // Flee button - always in bottom right, 80x80
+  const fleeX=W-90,fleeY=H-90,fleeS=80;
+  if(mouse.clicked&&mouse.x>fleeX&&mouse.x<fleeX+fleeS&&mouse.y>fleeY&&mouse.y<fleeY+fleeS){
+    consumeClick();
+    playSound('flee');
+    const cost=Math.floor(player.hp*0.1);
+    player.hp-=cost;
+    addFloatingText(200,280,'-'+cost,C.hp);
+    const room=floorRooms[currentRoomIdx];
+    room.cleared=true;updateDoors();
+    // Reset cooldowns
+    for(const a of player.abilities)a.currentCD=0;
+    gameState='exploration';
+    return;
+  }
+
+  // Ability button clicks - 4 buttons across the bottom
+  if(!targetMode){
+    const btnW=150,btnH=80;
+    const totalW=btnW*4+12*3; // 4 buttons + 3 gaps
+    const startX=(W-totalW)/2;
+    const btnY=H-btnH-10;
+    for(let i=0;i<4;i++){
+      const bx=startX+i*(btnW+12);
+      if(mouse.x>bx&&mouse.x<bx+btnW&&mouse.y>btnY&&mouse.y<btnY+btnH){
+        if(consumeClick()){
+          const ability=player.abilities[i];
+          if(ability.currentCD>0)continue; // on cooldown
+          if(ability.target==='single'){
+            targetAbility=i;targetMode=true;
+          } else {
+            useAbility(i,null);
+          }
+        }
+      }
+    }
+  }
+
+  // Target selection
+  if(targetMode&&targetAbility!=null){
+    for(let i=0;i<combatEnemies.length;i++){
+      const e=combatEnemies[i];
+      if(e.hp<=0)continue;
+      if(e.backRow){
+        const frontAlive=combatEnemies.some(en=>!en.backRow&&en.hp>0);
+        if(frontAlive)continue;
+      }
+      const ey=180+i*80;
+      if(mouse.x>480&&mouse.x<620&&mouse.y>ey-30&&mouse.y<ey+30){
+        if(consumeClick()){useAbility(targetAbility,i)}
+      }
+    }
+    // Click elsewhere to cancel
+    if(consumeClick()){targetMode=false;targetAbility=null}
+  }
+
+  // Potion in combat
+  if(keyPressed('q')&&player.potions>0&&player.hp<player.maxHp){
+    player.potions--;
+    player.hp=Math.min(player.maxHp,player.hp+30);
+    playSound('potion');
+    addRisingParticle(200,300,'#44cc44',8);
+    addFloatingText(200,280,'+30','#44cc44');
+  }
+}
+
+// ===== DRAWING =====
+function drawRoom(){
+  const room=floorRooms[currentRoomIdx];
+  // Floor tiles
+  for(let x=0;x<COLS;x++)for(let y=0;y<Math.floor((H-HUD_TOP)/TILE);y++){
+    ctx.fillStyle=(x+y)%2===0?C.floor:C.floor2;
+    ctx.fillRect(x*TILE,HUD_TOP+y*TILE,TILE,TILE);
+  }
+  // Walls
+  ctx.fillStyle=C.wall;
+  for(let x=0;x<COLS;x++){ctx.fillRect(x*TILE,HUD_TOP,TILE,TILE);ctx.fillRect(x*TILE,H-TILE,TILE,TILE)}
+  for(let y=0;y<Math.floor((H-HUD_TOP)/TILE);y++){ctx.fillRect(0,HUD_TOP+y*TILE,TILE,TILE);ctx.fillRect(W-TILE,HUD_TOP+y*TILE,TILE,TILE)}
+  // Wall detail
+  ctx.fillStyle='#7A6548';
+  for(let x=1;x<COLS-1;x+=3){
+    ctx.fillRect(x*TILE+4,HUD_TOP+2,TILE-8,TILE-6);
+    ctx.fillRect(x*TILE+4,H-TILE+2,TILE-8,TILE-6);
+  }
+  // Torches
+  for(let x=2;x<COLS-1;x+=5){
+    drawTorch(x*TILE+16,HUD_TOP+TILE-4);
+    drawTorch(x*TILE+16,H-TILE+4);
+  }
+  // Doors
+  for(const d of room.doors){
+    ctx.fillStyle='#AA8844';
+    ctx.fillRect(d.x-16,d.y-20,32,40);
+    ctx.fillStyle='#886633';
+    ctx.fillRect(d.x-12,d.y-16,24,32);
+    ctx.fillStyle='rgba(255,215,0,'+((Math.sin(frameCount*0.05)+1)*0.15+0.1)+')';
+    ctx.fillRect(d.x-20,d.y-24,40,48);
+  }
+  // Traps
+  for(const t of room.traps){
+    if(t.type==='spike'){
+      if(t.active){ctx.fillStyle='#aaa';for(let i=0;i<4;i++)ctx.fillRect(t.x+4+i*7,t.y,4,TILE)}
+      else{ctx.fillStyle='#555';for(let i=0;i<4;i++)ctx.fillRect(t.x+4+i*7,t.y+TILE-4,4,4)}
+    } else if(t.type==='poison'){
+      ctx.fillStyle='rgba(102,204,68,0.4)';
+      ctx.beginPath();ctx.arc(t.x+24,t.y+24,24,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='rgba(102,204,68,0.2)';
+      ctx.beginPath();ctx.arc(t.x+24+Math.sin(frameCount*0.03)*8,t.y+24+Math.cos(frameCount*0.04)*8,16,0,Math.PI*2);ctx.fill();
+    } else if(t.type==='arrow'&&t.active){
+      ctx.fillStyle='#8B6914';ctx.fillRect(t.x-3,t.y-3,6,6);
+    }
+  }
+  // Entities
+  for(const e of room.entities){
+    if(e.type==='enemy'){
+      drawSprite(e.x,e.y+Math.sin(frameCount*0.04+e.x)*1,e.size,e.color,e.boss);
+      ctx.fillStyle=C.hpBg;ctx.fillRect(e.x-20,e.y-e.size/2-10,40,6);
+      ctx.fillStyle=C.hp;ctx.fillRect(e.x-20,e.y-e.size/2-10,40*(e.hp/e.maxHp),6);
+    }
+    if(e.type==='chest'){
+      if(!e.opened){
+        ctx.fillStyle='#8B6914';ctx.fillRect(e.x-16,e.y-12,32,24);
+        ctx.fillStyle=C.gold;ctx.fillRect(e.x-12,e.y-10,24,4);
+        ctx.fillStyle='#A0782A';ctx.fillRect(e.x-14,e.y-6,28,16);
+      } else {
+        ctx.fillStyle='#6B5010';ctx.fillRect(e.x-16,e.y-4,32,16);
+        ctx.fillStyle='#8B6914';ctx.fillRect(e.x-16,e.y-16,32,12);
+      }
+    }
+    if(e.type==='campfire'){
+      ctx.fillStyle='#8B4513';ctx.fillRect(e.x-8,e.y+4,16,8);
+      if(!e.used){
+        const flicker=Math.random()*4;
+        ctx.fillStyle=C.torch;ctx.fillRect(e.x-6+flicker,e.y-8,12,14);
+        ctx.fillStyle='#FFD700';ctx.fillRect(e.x-3+flicker,e.y-12,6,8);
+      }
+    }
+    if(e.type==='merchant'){
+      drawSprite(e.x,e.y,TILE,'#4466AA',false);
+      ctx.fillStyle='#fff';ctx.font='10px monospace';ctx.textAlign='center';
+      ctx.fillText('SHOP',e.x,e.y-24);
+      if(Math.hypot(player.x-e.x,player.y-e.y)<40){ctx.fillStyle=C.gold;ctx.fillText('[Click to Enter]',e.x,e.y-36)}
+      ctx.textAlign='left';
+    }
+  }
+  // Player
+  if(player.flashTimer%4<2){
+    drawSprite(player.x,player.y+player.bobOffset,TILE,player.color,false);
+  }
+}
+
+function drawSprite(x,y,size,color,isBoss){
+  const s=size/2;
+  ctx.fillStyle=color;
+  ctx.fillRect(x-s/2,y-s,s,s*1.5);
+  ctx.fillStyle=color;
+  ctx.fillRect(x-s/3,y-s-s/2,s*0.66,s*0.66);
+  ctx.fillStyle='#fff';
+  ctx.fillRect(x-s/4,y-s-s/4,3,3);
+  ctx.fillRect(x+s/8,y-s-s/4,3,3);
+  if(isBoss){
+    ctx.strokeStyle='#ff0';ctx.lineWidth=2;
+    ctx.strokeRect(x-s/2-2,y-s-s/2-2,s+4,s*2+4);
+    ctx.lineWidth=1;
+  }
+}
+
+function drawTorch(x,y){
+  const f=Math.random()*3;
+  ctx.fillStyle='#8B4513';ctx.fillRect(x-2,y,4,10);
+  ctx.fillStyle=C.torch;ctx.fillRect(x-4+f,y-6,8,8);
+  ctx.fillStyle='#FFD700';ctx.fillRect(x-2+f,y-8,4,4);
+}
+
+function drawHUD(){
+  // Top bar
+  ctx.fillStyle=C.hudBg;ctx.fillRect(0,0,W,HUD_TOP);
+  // HP bar
+  ctx.fillStyle=C.hpBg;ctx.fillRect(10,10,200,20);
+  ctx.fillStyle=C.hp;ctx.fillRect(10,10,200*(player.hp/player.maxHp),20);
+  ctx.strokeStyle='#888';ctx.strokeRect(10,10,200,20);
+  ctx.fillStyle='#fff';ctx.font='12px monospace';
+  ctx.fillText(player.hp+'/'+player.maxHp,80,25);
+  // Gold
+  ctx.fillStyle=C.gold;ctx.fillText('Gold: '+player.gold,230,25);
+  // Floor
+  ctx.fillStyle='#fff';ctx.fillText('Floor '+currentFloor+'/5',400,25);
+  // Potion
+  ctx.fillStyle='#cc4444';ctx.fillText('Potions: '+player.potions+' [Q]',520,25);
+  // Minimap
+  drawMinimap();
+}
+
+// ===== PROPER MINIMAP =====
+function drawMinimap(){
+  const mmW=120,mmH=90;
+  const mx=W-mmW-5,my=HUD_TOP+5;
+  const roomSize=10,gap=4;
+
+  // Semi-transparent dark background
+  ctx.fillStyle='rgba(0,0,0,0.6)';
+  ctx.fillRect(mx,my,mmW,mmH);
+  ctx.strokeStyle='#5A4030';ctx.strokeRect(mx,my,mmW,mmH);
+
+  // Calculate layout - arrange rooms in a grid-like flow
+  const numRooms=floorRooms.length;
+  const cols=Math.min(numRooms,8);
+  const rows=Math.ceil(numRooms/cols);
+  const cellW=(mmW-8)/cols;
+  const cellH=(mmH-8)/rows;
+
+  const positions=[];
+  for(let i=0;i<numRooms;i++){
+    const col=i%cols;
+    const row=Math.floor(i/cols);
+    const rx=mx+4+col*cellW+cellW/2-roomSize/2;
+    const ry=my+4+row*cellH+cellH/2-roomSize/2;
+    positions.push({x:rx,y:ry});
+  }
+
+  // Draw connections first
+  ctx.strokeStyle='#8B7355';ctx.lineWidth=1;
+  for(let i=0;i<numRooms;i++){
+    const room=floorRooms[i];
+    for(const childIdx of room.children){
+      if(childIdx<numRooms){
+        ctx.beginPath();
+        ctx.moveTo(positions[i].x+roomSize/2,positions[i].y+roomSize/2);
+        ctx.lineTo(positions[childIdx].x+roomSize/2,positions[childIdx].y+roomSize/2);
+        ctx.stroke();
+      }
+    }
+  }
+  ctx.lineWidth=1;
+
+  // Draw rooms
+  for(let i=0;i<numRooms;i++){
+    const room=floorRooms[i];
+    const p=positions[i];
+    if(room.visited){
+      if(i===currentRoomIdx){
+        ctx.fillStyle=C.gold; // current room highlighted gold
+      } else {
+        ctx.fillStyle='#F0E6D0'; // explored rooms parchment color
+      }
+    } else {
+      ctx.fillStyle='#333'; // unexplored
+    }
+    ctx.fillRect(p.x,p.y,roomSize,roomSize);
+
+    // Boss room indicator
+    if(room.type==='boss'&&room.visited){
+      ctx.fillStyle='#cc3333';
+      ctx.fillRect(p.x+2,p.y+2,roomSize-4,roomSize-4);
+    }
+  }
+}
+
+function drawCombat(){
+  // Dim background
+  ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(0,0,W,H);
+  // Ground
+  ctx.fillStyle=C.floor;ctx.fillRect(0,400,W,200);
+  ctx.fillStyle=C.floor2;
+  for(let x=0;x<W;x+=40)ctx.fillRect(x,400,20,200);
+
+  // Player
+  drawSprite(200,300,48,player.color,false);
+  // Player HP
+  ctx.fillStyle=C.hpBg;ctx.fillRect(150,350,100,10);
+  ctx.fillStyle=C.hp;ctx.fillRect(150,350,100*(player.hp/player.maxHp),10);
+  ctx.fillStyle='#fff';ctx.font='11px monospace';ctx.textAlign='center';
+  ctx.fillText(player.name,200,375);
+  if(player.blocking>0){ctx.fillStyle='#4488cc';ctx.fillText('Shield: '+player.blocking,200,390)}
+  if(player.dodgeCharges>0){ctx.fillStyle='#88ccdd';ctx.fillText('Dodge x'+player.dodgeCharges,200,390)}
+  if(player.buffTurns>0){ctx.fillStyle='#cc8844';ctx.fillText('Atk +'+player.buffDmg+' ('+player.buffTurns+'t)',200,405)}
+
+  // Enemies
+  for(let i=0;i<combatEnemies.length;i++){
+    const e=combatEnemies[i];
+    if(e.hp<=0)continue;
+    const ey=180+i*80;
+    const sway=Math.sin(frameCount*0.03+i)*2;
+    drawSprite(550+sway,ey,e.size||TILE,e.color,e.boss);
+    ctx.fillStyle=C.hpBg;ctx.fillRect(510,ey+e.size/2+4,80,8);
+    ctx.fillStyle=C.hp;ctx.fillRect(510,ey+e.size/2+4,80*(e.hp/e.maxHp),8);
+    ctx.fillStyle='#fff';ctx.font='10px monospace';ctx.textAlign='center';
+    ctx.fillText(e.name,550,ey+e.size/2+22);
+    if(e.poisonTurns>0){ctx.fillStyle='#88aa22';ctx.fillText('PSN '+e.poisonTurns,550,ey+e.size/2+32)}
+    // Target highlight
+    if(targetMode&&mouse.x>480&&mouse.x<620&&mouse.y>ey-30&&mouse.y<ey+30){
+      ctx.strokeStyle='#ff0';ctx.lineWidth=2;
+      ctx.strokeRect(500,ey-35,100,70);ctx.lineWidth=1;
+    }
+  }
+
+  // Turn indicator
+  ctx.fillStyle='#fff';ctx.font='16px monospace';ctx.textAlign='center';
+  ctx.fillText(combatTurn==='player'?'-- Your Turn --':'-- Enemy Turn --',400,40);
+
+  // Combat log
+  if(combatLogTimer>0){
+    const a=Math.min(1,combatLogTimer/30);
+    ctx.globalAlpha=a;ctx.fillStyle='#fff';ctx.font='14px monospace';
+    ctx.fillText(combatLog,400,70);ctx.globalAlpha=1;
+  }
+
+  // Ability buttons - 4 buttons (150x80) across bottom
+  if(combatTurn==='player'&&!enemyActing){
+    const btnW=150,btnH=80;
+    const totalW=btnW*4+12*3;
+    const startX=(W-totalW)/2;
+    const btnY=H-btnH-10;
+
+    for(let i=0;i<4;i++){
+      const ability=player.abilities[i];
+      const bx=startX+i*(btnW+12);
+      const hover=mouse.x>bx&&mouse.x<bx+btnW&&mouse.y>btnY&&mouse.y<btnY+btnH;
+      const onCD=ability.currentCD>0;
+      const isLocked=i<2; // first 2 are class abilities
+      const isPulsing=abilityPulse[0]===i&&abilityPulse[1]>0;
+
+      // Button background
+      if(onCD){
+        ctx.fillStyle='#444'; // gray when on cooldown
+      } else if(isPulsing){
+        const pulse=abilityPulse[1]/15;
+        ctx.fillStyle='rgba(255,255,200,'+(0.3+pulse*0.4)+')';
+      } else if(hover){
+        ctx.fillStyle='#4a3828';
+      } else {
+        ctx.fillStyle=C.card; // parchment when available
+      }
+      ctx.fillRect(bx,btnY,btnW,btnH);
+
+      // Border - gold for class abilities, brown for swappable
+      ctx.strokeStyle=isLocked?(onCD?'#555':C.gold):(onCD?'#555':'#8B7355');
+      ctx.lineWidth=isLocked?2:1;
+      ctx.strokeRect(bx,btnY,btnW,btnH);
+      ctx.lineWidth=1;
+
+      // Ability color bar at top
+      ctx.fillStyle=onCD?'#555':(ability.color||'#888');
+      ctx.fillRect(bx+4,btnY+4,btnW-8,6);
+
+      // Ability name
+      ctx.fillStyle=onCD?'#777':C.cardText;
+      ctx.font='bold 12px monospace';ctx.textAlign='center';
+      ctx.fillText(ability.name,bx+btnW/2,btnY+28);
+
+      // Description
+      ctx.font='9px monospace';
+      ctx.fillStyle=onCD?'#666':'#555';
+      ctx.fillText(ability.desc,bx+btnW/2,btnY+44);
+
+      // Cooldown indicator
+      if(onCD){
+        ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(bx,btnY,btnW,btnH);
+        ctx.fillStyle='#ff6644';ctx.font='bold 24px monospace';
+        ctx.fillText(ability.currentCD,bx+btnW/2,btnY+58);
+        ctx.font='9px monospace';ctx.fillStyle='#aaa';
+        ctx.fillText('COOLDOWN',bx+btnW/2,btnY+72);
+      } else {
+        // CD label
+        ctx.font='9px monospace';ctx.fillStyle='#888';
+        ctx.fillText('CD: '+ability.cooldown,bx+btnW/2,btnY+60);
+        // Slot label
+        ctx.fillStyle=isLocked?'#886622':'#666';
+        ctx.font='8px monospace';
+        ctx.fillText(isLocked?'[CLASS]':'[SWAP]',bx+btnW/2,btnY+74);
+      }
+    }
+
+    // Flee button - 80x80 bottom right
+    const fleeX=W-90,fleeY=H-90,fleeS=80;
+    const fleeHover=mouse.x>fleeX&&mouse.x<fleeX+fleeS&&mouse.y>fleeY&&mouse.y<fleeY+fleeS;
+    ctx.fillStyle=fleeHover?'#6a3322':'#4a2218';
+    ctx.fillRect(fleeX,fleeY,fleeS,fleeS);
+    ctx.strokeStyle=fleeHover?'#cc6644':'#884422';
+    ctx.lineWidth=2;ctx.strokeRect(fleeX,fleeY,fleeS,fleeS);ctx.lineWidth=1;
+    ctx.fillStyle='#fff';ctx.font='bold 16px monospace';
+    ctx.fillText('FLEE',fleeX+fleeS/2,fleeY+35);
+    ctx.font='9px monospace';ctx.fillStyle='#cc8866';
+    ctx.fillText('-10% HP',fleeX+fleeS/2,fleeY+55);
+
+    // Potion indicator
+    ctx.fillStyle='#cc4444';ctx.font='11px monospace';
+    ctx.fillText('Potions: '+player.potions+' [Q]',100,H-20);
+  }
+
+  if(targetMode){
+    ctx.fillStyle='rgba(255,255,0,0.3)';ctx.font='14px monospace';
+    ctx.textAlign='center';
+    ctx.fillText('Click an enemy to target',400,460);
+  }
+
+  ctx.textAlign='left';
+}
+
+// ===== SHOP =====
+function drawShop(){
+  const room=floorRooms[currentRoomIdx];
+  ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#fff';ctx.font='24px monospace';ctx.textAlign='center';
+  ctx.fillText('SHOP',400,60);
+  ctx.fillStyle=C.gold;ctx.font='16px monospace';
+  ctx.fillText('Gold: '+player.gold,400,90);
+
+  if(!room.shopItems)return;
+  for(let i=0;i<room.shopItems.length;i++){
+    const item=room.shopItems[i];
+    const y=140+i*110;
+    const hover=mouse.x>250&&mouse.x<550&&mouse.y>y&&mouse.y<y+90;
+    ctx.fillStyle=hover?'#3a3020':C.cardBorder;
+    ctx.fillRect(250,y,300,90);
+    ctx.strokeStyle=C.gold;ctx.strokeRect(250,y,300,90);
+    ctx.fillStyle='#fff';ctx.font='14px monospace';
+    ctx.fillText(item.name,400,y+25);
+    ctx.font='11px monospace';ctx.fillStyle='#ccc';
+    ctx.fillText(item.desc,400,y+45);
+    ctx.fillStyle=player.gold>=item.price?C.gold:'#888';
+    ctx.fillText(item.price+' gold',400,y+70);
+
+    if(hover&&consumeClick()&&player.gold>=item.price){
+      player.gold-=item.price;meta.gold-=item.price;saveMeta();
+      playSound('gold');
+      if(item.type==='potion'){
+        if(player.potions<player.maxPotions)player.potions++;
+      } else if(item.type==='ability'){
+        pendingAbility=makeAbility(item.abilityId);
+        gameState='abilityPickup';return;
+      }
+    }
+  }
+  // Leave
+  const ly=140+room.shopItems.length*110+20;
+  ctx.fillStyle=mouse.x>300&&mouse.x<500&&mouse.y>ly&&mouse.y<ly+40?'#555':'#333';
+  ctx.fillRect(300,ly,200,40);ctx.strokeStyle='#888';ctx.strokeRect(300,ly,200,40);
+  ctx.fillStyle='#fff';ctx.font='14px monospace';ctx.fillText('Leave Shop',400,ly+25);
+  if(mouse.x>300&&mouse.x<500&&mouse.y>ly&&mouse.y<ly+40&&consumeClick()){
+    gameState='exploration';
+  }
+  ctx.textAlign='left';
+}
+
+// ===== ABILITY SWAP POPUP =====
+function drawAbilityPickup(){
+  ctx.fillStyle='rgba(0,0,0,0.85)';ctx.fillRect(0,0,W,H);
+  if(!pendingAbility)return;
+  ctx.fillStyle=C.gold;ctx.font='bold 22px monospace';ctx.textAlign='center';
+  ctx.fillText('New Ability Found!',400,60);
+
+  // Show new ability details
+  ctx.fillStyle=C.card;ctx.fillRect(300,80,200,120);
+  ctx.strokeStyle=C.cardBorder;ctx.lineWidth=2;ctx.strokeRect(300,80,200,120);ctx.lineWidth=1;
+  // Color bar
+  ctx.fillStyle=pendingAbility.color||'#888';ctx.fillRect(310,90,180,6);
+  ctx.fillStyle=C.cardText;ctx.font='bold 14px monospace';
+  ctx.fillText(pendingAbility.name,400,120);
+  ctx.font='11px monospace';ctx.fillStyle='#555';
+  ctx.fillText(pendingAbility.desc,400,140);
+  ctx.fillStyle='#888';ctx.font='10px monospace';
+  ctx.fillText('Cooldown: '+pendingAbility.cooldown,400,160);
+
+  // Show current swappable slots
+  ctx.fillStyle='#ddd';ctx.font='bold 16px monospace';
+  ctx.fillText('Replace which ability?',400,230);
+
+  // Slot 1 (swap slot = index 2)
+  const s1=player.abilities[2];
+  const h1=mouse.x>100&&mouse.x<350&&mouse.y>260&&mouse.y<340;
+  ctx.fillStyle=h1?'#3a3a28':'#2a2a1e';
+  ctx.fillRect(100,260,250,80);
+  ctx.strokeStyle=h1?C.gold:'#888';ctx.strokeRect(100,260,250,80);
+  ctx.fillStyle=s1.color||'#888';ctx.fillRect(110,268,230,4);
+  ctx.fillStyle='#fff';ctx.font='bold 13px monospace';
+  ctx.fillText(s1.name,225,290);
+  ctx.font='10px monospace';ctx.fillStyle='#ccc';
+  ctx.fillText(s1.desc+' (CD:'+s1.cooldown+')',225,308);
+  ctx.fillStyle='#aaa';ctx.font='9px monospace';
+  ctx.fillText('[Swap Slot 1]',225,328);
+
+  // Slot 2 (swap slot = index 3)
+  const s2=player.abilities[3];
+  const h2=mouse.x>450&&mouse.x<700&&mouse.y>260&&mouse.y<340;
+  ctx.fillStyle=h2?'#3a3a28':'#2a2a1e';
+  ctx.fillRect(450,260,250,80);
+  ctx.strokeStyle=h2?C.gold:'#888';ctx.strokeRect(450,260,250,80);
+  ctx.fillStyle=s2.color||'#888';ctx.fillRect(460,268,230,4);
+  ctx.fillStyle='#fff';ctx.font='bold 13px monospace';
+  ctx.fillText(s2.name,575,290);
+  ctx.font='10px monospace';ctx.fillStyle='#ccc';
+  ctx.fillText(s2.desc+' (CD:'+s2.cooldown+')',575,308);
+  ctx.fillStyle='#aaa';ctx.font='9px monospace';
+  ctx.fillText('[Swap Slot 2]',575,328);
+
+  // Discard button
+  const dh=mouse.x>300&&mouse.x<500&&mouse.y>370&&mouse.y<410;
+  ctx.fillStyle=dh?'#5a2a2a':'#3e1e1e';
+  ctx.fillRect(300,370,200,40);
+  ctx.strokeStyle=dh?'#a66':'#633';ctx.strokeRect(300,370,200,40);
+  ctx.fillStyle='#fff';ctx.font='14px monospace';
+  ctx.fillText('Discard',400,395);
+
+  if(consumeClick()){
+    if(h1){
+      // Replace swap slot 1
+      player.abilities[2]=pendingAbility;player.abilities[2].currentCD=0;
+      pendingAbility=null;
+      gameState=combatEnemies.some(e=>e.hp>0)?'combat':'exploration';
+    } else if(h2){
+      // Replace swap slot 2
+      player.abilities[3]=pendingAbility;player.abilities[3].currentCD=0;
+      pendingAbility=null;
+      gameState=combatEnemies.some(e=>e.hp>0)?'combat':'exploration';
+    } else if(dh){
+      pendingAbility=null;
+      gameState=combatEnemies.some(e=>e.hp>0)?'combat':'exploration';
+    }
+  }
+  ctx.textAlign='left';
+}
+
+// ===== DRAW MENU BACKGROUND =====
+function drawMenuBg(){
+  ctx.fillStyle=C.shadow;ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#222238';
+  for(let y=0;y<H;y+=24)for(let x=(y%48===0?0:20);x<W;x+=40){
+    ctx.fillRect(x+1,y+1,37,21);
+  }
+  ctx.fillStyle=C.wall;
+  ctx.fillRect(0,0,W,6);ctx.fillRect(0,H-6,W,6);
+  ctx.fillRect(0,0,6,H);ctx.fillRect(W-6,0,6,H);
+  drawTorch(50,140);drawTorch(50,340);
+  drawTorch(W-50,140);drawTorch(W-50,340);
+}
+
+// ===== DRAW BUTTON HELPER =====
+function drawBtn(x,y,w,h,label,hover,style){
+  const s=style||'default';
+  if(s==='green'){ctx.fillStyle=hover?'#2a5a2a':'#1e3e1e'}
+  else if(s==='red'){ctx.fillStyle=hover?'#5a2a2a':'#3e1e1e'}
+  else{ctx.fillStyle=hover?'#4a3828':'#2a1e14'}
+  ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle=hover?C.gold:'#8B7355';ctx.lineWidth=2;
+  ctx.strokeRect(x,y,w,h);ctx.lineWidth=1;
+  ctx.fillStyle=hover?C.gold:'#ddd';ctx.font='bold 18px monospace';
+  ctx.textAlign='center';ctx.fillText(label,x+w/2,y+h/2+6);
+}
+
+// ===== TITLE SCREEN =====
+function drawTitle(){
+  drawMenuBg();
+  ctx.fillStyle='#000';ctx.font='bold 48px monospace';ctx.textAlign='center';
+  ctx.fillText('DUNGEON DEPTHS',402,182);
+  ctx.fillStyle=C.gold;
+  ctx.fillText('DUNGEON DEPTHS',400,180);
+  ctx.fillStyle='#bbb';ctx.font='16px monospace';
+  ctx.fillText('A Dungeon Crawler',400,215);
+
+  const btns=[{label:'New Run',y:280},{label:'Upgrades',y:340},{label:'How to Play',y:400}];
+  for(const b of btns){
+    const hover=mouse.x>260&&mouse.x<540&&mouse.y>b.y&&mouse.y<b.y+48;
+    drawBtn(260,b.y,280,48,b.label,hover);
+  }
+  ctx.fillStyle=C.gold;ctx.font='14px monospace';ctx.textAlign='center';
+  ctx.fillText('Gold: '+meta.gold+'    Legacy Points: '+meta.legacyPoints,400,490);
+  ctx.textAlign='left';
+
+  if(consumeClick()){
+    initAudio();
+    if(mouse.x>260&&mouse.x<540){
+      if(mouse.y>280&&mouse.y<328)startTransition(()=>{gameState='charSelect'});
+      else if(mouse.y>340&&mouse.y<388)startTransition(()=>{gameState='upgrades'});
+      else if(mouse.y>400&&mouse.y<448)startTransition(()=>{gameState='instructions'});
+    }
+  }
+}
+
+// ===== CHARACTER SELECT =====
+let selectedChar=0;
+function drawCharSelect(){
+  drawMenuBg();
+  ctx.fillStyle=C.gold;ctx.font='bold 28px monospace';ctx.textAlign='center';
+  ctx.fillText('Select Your Hero',400,50);
+
+  for(let i=0;i<CHARACTERS.length;i++){
+    const ch=CHARACTERS[i];
+    const x=100+i*170;const y=90;
+    const hover=mouse.x>x-70&&mouse.x<x+70&&mouse.y>y&&mouse.y<y+160;
+    const unlocked=ch.unlocked;
+
+    ctx.fillStyle=selectedChar===i?'#3a3020':(hover&&unlocked?'#2a2018':'#1a1510');
+    ctx.fillRect(x-70,y,140,160);
+    ctx.strokeStyle=selectedChar===i?C.gold:(unlocked?'#888':'#444');
+    ctx.lineWidth=selectedChar===i?2:1;
+    ctx.strokeRect(x-70,y,140,160);ctx.lineWidth=1;
+
+    if(unlocked){
+      drawSprite(x,y+55,TILE,ch.color,false);
+      ctx.fillStyle='#fff';ctx.font='bold 13px monospace';
+      ctx.fillText(ch.name,x,y+95);
+      ctx.fillStyle='#aaa';ctx.font='11px monospace';
+      ctx.fillText('HP: '+ch.hp,x,y+112);
+      ctx.fillText(ch.passive,x,y+130);
+    } else {
+      ctx.fillStyle='#666';ctx.font='bold 13px monospace';
+      ctx.fillText('LOCKED',x,y+65);
+      ctx.fillStyle='#888';ctx.font='11px monospace';
+      ctx.fillText(ch.unlockText,x,y+85);
+    }
+
+    if(hover&&unlocked&&consumeClick())selectedChar=i;
+  }
+
+  // Start button
+  const sy=290;
+  const sHover=mouse.x>260&&mouse.x<540&&mouse.y>sy&&mouse.y<sy+50;
+  drawBtn(260,sy,280,50,'Start Run',sHover,'green');
+
+  // Ability preview
+  const ch=CHARACTERS[selectedChar];
+  if(ch.unlocked){
+    ctx.fillStyle=C.card;ctx.font='bold 14px monospace';ctx.textAlign='center';
+    ctx.fillText('Abilities:',400,370);
+    ctx.font='12px monospace';ctx.fillStyle='#ccc';
+    const locked=ch.locked.map(id=>ABILITY_DEFS[id].name+' [Class]');
+    const swap=ch.swap.map(id=>ABILITY_DEFS[id].name+' [Swap]');
+    ctx.fillText(locked.join(', '),400,390);
+    ctx.fillText(swap.join(', '),400,408);
+  }
+
+  // Back button
+  const bHover=mouse.x>20&&mouse.x<140&&mouse.y>10&&mouse.y<44;
+  ctx.fillStyle=bHover?'#5a4830':'#3d3028';ctx.fillRect(20,10,120,34);
+  ctx.strokeStyle=bHover?C.gold:'#9a8a6a';ctx.strokeRect(20,10,120,34);
+  ctx.fillStyle='#fff';ctx.font='bold 14px monospace';
+  ctx.fillText('< Back',80,32);
+
+  if(consumeClick()){
+    if(mouse.x>260&&mouse.x<540&&mouse.y>sy&&mouse.y<sy+50&&CHARACTERS[selectedChar].unlocked){
+      meta.totalRuns++;saveMeta();
+      startTransition(()=>{initPlayer(selectedChar);gameState='exploration'});
+    }
+    if(mouse.x>20&&mouse.x<140&&mouse.y>10&&mouse.y<44)startTransition(()=>{gameState='title'});
+  }
+  ctx.textAlign='left';
+}
+
+// ===== UPGRADES =====
+function drawUpgrades(){
+  drawMenuBg();
+  ctx.fillStyle=C.gold;ctx.font='bold 28px monospace';ctx.textAlign='center';
+  ctx.fillText('Upgrades',400,50);
+  ctx.fillStyle=C.gold;ctx.font='16px monospace';
+  ctx.fillText('Gold: '+meta.gold,400,85);
+  ctx.fillStyle='#aaa';ctx.font='12px monospace';
+  ctx.fillText('Legacy Points: '+meta.legacyPoints,400,105);
+
+  const upgrades=[
+    {name:'+5 Max HP',cost:50,max:5,current:meta.hpBonus,key:'hpBonus'},
+    {name:'+2 Base Damage',cost:75,max:3,current:meta.dmgBonus,key:'dmgBonus'},
+    {name:'+1 Starting Potion',cost:100,max:1,current:meta.startPotion?1:0,key:'startPotion',isBool:true},
+    {name:'Start with Rare Ability',cost:200,max:1,current:meta.startRareAbility?1:0,key:'startRareAbility',isBool:true},
+  ];
+
+  for(let i=0;i<upgrades.length;i++){
+    const u=upgrades[i];const y=130+i*75;
+    const maxed=u.current>=u.max;
+    const canBuy=!maxed&&meta.gold>=u.cost;
+    const hover=mouse.x>180&&mouse.x<620&&mouse.y>y&&mouse.y<y+65&&canBuy;
+
+    ctx.fillStyle=hover?'#3a3020':'#1e1810';
+    ctx.fillRect(180,y,440,65);
+    ctx.strokeStyle=canBuy?C.gold:'#555';ctx.strokeRect(180,y,440,65);
+
+    ctx.fillStyle='#fff';ctx.font='14px monospace';
+    ctx.fillText(u.name+(maxed?' (MAX)':' ['+u.current+'/'+u.max+']'),400,y+26);
+    ctx.fillStyle=canBuy?C.gold:'#666';ctx.font='12px monospace';
+    ctx.fillText(maxed?'Maxed':'Cost: '+u.cost+' gold',400,y+48);
+
+    if(hover&&consumeClick()){
+      meta.gold-=u.cost;
+      if(u.isBool)meta[u.key]=true;
+      else meta[u.key]++;
+      playSound('gold');saveMeta();
+    }
+  }
+
+  // Back
+  const bHover=mouse.x>280&&mouse.x<520&&mouse.y>460&&mouse.y<508;
+  drawBtn(280,460,240,48,'Back',bHover);
+  if(bHover&&consumeClick())startTransition(()=>{gameState='title'});
+  ctx.textAlign='left';
+}
+
+// ===== INSTRUCTIONS =====
+function drawInstructions(){
+  drawMenuBg();
+  ctx.fillStyle=C.gold;ctx.font='bold 28px monospace';ctx.textAlign='center';
+  ctx.fillText('How to Play',400,50);
+
+  ctx.fillStyle='rgba(20,18,30,0.7)';ctx.fillRect(120,80,560,340);
+  ctx.strokeStyle='#5a4a3a';ctx.strokeRect(120,80,560,340);
+
+  const lines=[
+    {t:'Move with WASD or Arrow Keys',c:'#fff'},
+    {t:'Walk into enemies to start combat',c:'#fff'},
+    {t:'Use 4 abilities each turn to fight',c:'#fff'},
+    {t:'2 class abilities + 2 swappable slots',c:C.gold},
+    {t:'Find new abilities from chests & drops',c:'#fff'},
+    {t:'Press Q or click potion icon to heal',c:'#fff'},
+    {t:'Press P or Escape to pause',c:'#fff'},
+    {t:'',c:'#fff'},
+    {t:'Defeat the Dragon on Floor 5 to win!',c:'#ff6644'},
+    {t:'Each run earns Legacy Points for upgrades.',c:'#aabb88'},
+  ];
+  for(let i=0;i<lines.length;i++){
+    ctx.fillStyle=lines[i].c;ctx.font='15px monospace';
+    ctx.fillText(lines[i].t,400,115+i*32);
+  }
+
+  const bHover=mouse.x>280&&mouse.x<520&&mouse.y>450&&mouse.y<498;
+  drawBtn(280,450,240,48,'Back',bHover);
+  if(bHover&&consumeClick())startTransition(()=>{gameState='title'});
+  ctx.textAlign='left';
+}
+
+// ===== PAUSE =====
+function drawPause(){
+  ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#2a2838';ctx.fillRect(250,100,300,300);
+  ctx.strokeStyle='#9a8a6a';ctx.lineWidth=2;ctx.strokeRect(250,100,300,300);ctx.lineWidth=1;
+  ctx.fillStyle=C.gold;ctx.font='bold 32px monospace';ctx.textAlign='center';
+  ctx.fillText('PAUSED',400,155);
+
+  const btns=[{label:'Resume',y:200},{label:'View Abilities',y:260},{label:'Quit Run',y:320}];
+  for(const b of btns){
+    const hover=mouse.x>280&&mouse.x<520&&mouse.y>b.y&&mouse.y<b.y+48;
+    drawBtn(280,b.y,240,48,b.label,hover,b.label==='Quit Run'?'red':undefined);
+  }
+  ctx.textAlign='left';
+
+  if(keyPressed('p')||keyPressed('escape')){gameState=prevState;return}
+  if(consumeClick()){
+    if(mouse.x>280&&mouse.x<520){
+      if(mouse.y>200&&mouse.y<248)gameState=prevState;
+      else if(mouse.y>260&&mouse.y<308)gameState='abilityView';
+      else if(mouse.y>320&&mouse.y<368){
+        awardLegacyPoints();
+        startTransition(()=>{gameState='title'});
+      }
+    }
+  }
+}
+
+// ===== ABILITY VIEW (replaces deck view) =====
+function drawAbilityView(){
+  ctx.fillStyle=C.shadow;ctx.fillRect(0,0,W,H);
+  ctx.fillStyle=C.gold;ctx.font='bold 22px monospace';ctx.textAlign='center';
+  ctx.fillText('Your Abilities',400,36);
+
+  for(let i=0;i<4;i++){
+    const a=player.abilities[i];
+    const x=200+i%2*220;const y=70+(i<2?0:160);
+    const isLocked=i<2;
+
+    ctx.fillStyle=C.card;ctx.fillRect(x-90,y,180,130);
+    ctx.strokeStyle=isLocked?C.gold:C.cardBorder;
+    ctx.lineWidth=isLocked?2:1;
+    ctx.strokeRect(x-90,y,180,130);ctx.lineWidth=1;
+
+    // Color bar
+    ctx.fillStyle=a.color||'#888';ctx.fillRect(x-82,y+8,164,6);
+    // Name
+    ctx.fillStyle=C.cardText;ctx.font='bold 14px monospace';
+    ctx.fillText(a.name,x,y+35);
+    // Desc
+    ctx.font='11px monospace';ctx.fillStyle='#555';
+    ctx.fillText(a.desc,x,y+55);
+    // Cooldown
+    ctx.fillStyle='#888';ctx.font='10px monospace';
+    ctx.fillText('Cooldown: '+a.cooldown,x,y+75);
+    // Slot type
+    ctx.fillStyle=isLocked?'#886622':'#666';
+    ctx.font='10px monospace';
+    ctx.fillText(isLocked?'[CLASS ABILITY]':'[SWAPPABLE]',x,y+95);
+  }
+
+  ctx.fillStyle='#ccc';ctx.font='13px monospace';
+  ctx.fillText('Click or press P to go back',400,440);
+  ctx.textAlign='left';
+
+  if(consumeClick()||keyPressed('p')||keyPressed('escape'))gameState='pause';
+}
+
+// ===== FLOOR TRANSITION =====
+let floorTransitionTimer=0;
+function drawFloorTransition(){
+  drawMenuBg();
+  ctx.fillStyle=C.gold;ctx.font='bold 36px monospace';ctx.textAlign='center';
+  ctx.fillText('Floor '+(currentFloor-1)+' Complete!',400,250);
+  ctx.fillStyle='#ddd';ctx.font='15px monospace';
+  ctx.fillText('Enemies defeated: '+runStats.enemiesDefeated,400,300);
+  ctx.fillText('Gold collected: '+runStats.goldCollected,400,325);
+  ctx.fillStyle='#aaa';ctx.font='13px monospace';
+  ctx.fillText('Click to continue...',400,380);
+  ctx.textAlign='left';
+
+  if(frameCount%3===0)addParticle(Math.random()*W,-10,C.gold,1,1,80);
+
+  floorTransitionTimer--;
+  if(floorTransitionTimer<=0||consumeClick()){
+    generateFloor();
+    startTransition(()=>{gameState='exploration'});
+  }
+}
+
+// ===== GAME OVER / VICTORY =====
+function endRun(won){
+  awardLegacyPoints();
+  if(won){
+    meta.mageUnlocked=true;
+    gameState='victory';
+  } else {
+    gameState='gameOver';
+  }
+  if(meta.totalRuns>=5)meta.clericUnlocked=true;
+  saveMeta();
+}
+
+function awardLegacyPoints(){
+  let pts=0;
+  for(let i=1;i<=player.floorsCleared;i++)pts+=i;
+  if(gameState==='victory')pts+=10;
+  meta.legacyPoints+=pts;
+  saveMeta();
+}
+
+function drawGameOver(){
+  drawMenuBg();
+  ctx.fillStyle='rgba(80,0,0,0.3)';ctx.fillRect(0,0,W,H);
+
+  ctx.fillStyle='#ff4444';ctx.font='bold 40px monospace';ctx.textAlign='center';
+  ctx.fillText('YOU HAVE FALLEN',400,110);
+
+  ctx.fillStyle='rgba(20,18,30,0.7)';ctx.fillRect(200,140,400,170);
+  ctx.strokeStyle='#664444';ctx.strokeRect(200,140,400,170);
+
+  ctx.fillStyle='#ddd';ctx.font='15px monospace';
+  ctx.fillText('Floor reached: '+currentFloor,400,175);
+  ctx.fillText('Rooms cleared: '+runStats.roomsCleared,400,200);
+  ctx.fillText('Enemies defeated: '+runStats.enemiesDefeated,400,225);
+  ctx.fillText('Gold collected: '+runStats.goldCollected,400,250);
+
+  let pts=0;for(let i=1;i<=player.floorsCleared;i++)pts+=i;
+  ctx.fillStyle=C.gold;ctx.font='bold 16px monospace';
+  ctx.fillText('Legacy Points earned: +'+pts,400,290);
+
+  const btns=[{label:'Try Again',y:370},{label:'Title Screen',y:430}];
+  for(const b of btns){
+    const hover=mouse.x>260&&mouse.x<540&&mouse.y>b.y&&mouse.y<b.y+48;
+    drawBtn(260,b.y,280,48,b.label,hover);
+  }
+  ctx.textAlign='left';
+
+  if(consumeClick()){
+    if(mouse.x>260&&mouse.x<540){
+      if(mouse.y>370&&mouse.y<418)startTransition(()=>{gameState='charSelect'});
+      if(mouse.y>430&&mouse.y<478)startTransition(()=>{gameState='title'});
+    }
+  }
+}
+
+function drawVictory(){
+  drawMenuBg();
+  ctx.fillStyle='rgba(60,50,0,0.3)';ctx.fillRect(0,0,W,H);
+
+  ctx.fillStyle=C.gold;ctx.font='bold 36px monospace';ctx.textAlign='center';
+  ctx.fillText('DUNGEON CONQUERED!',400,100);
+
+  if(frameCount%2===0)addParticle(Math.random()*W,Math.random()*H,C.gold,1,1,40);
+
+  ctx.fillStyle='rgba(30,28,40,0.8)';ctx.fillRect(200,130,400,160);
+  ctx.strokeStyle='#887744';ctx.strokeRect(200,130,400,160);
+
+  ctx.fillStyle='#ddd';ctx.font='15px monospace';
+  ctx.fillText('Rooms cleared: '+runStats.roomsCleared,400,165);
+  ctx.fillText('Enemies defeated: '+runStats.enemiesDefeated,400,190);
+  ctx.fillText('Gold collected: '+runStats.goldCollected,400,215);
+
+  let pts=0;for(let i=1;i<=player.floorsCleared;i++)pts+=i;pts+=10;
+  ctx.fillStyle=C.gold;ctx.font='bold 16px monospace';
+  ctx.fillText('Legacy Points earned: +'+pts,400,260);
+
+  const btns=[{label:'Play Again',y:340},{label:'Title Screen',y:400}];
+  for(const b of btns){
+    const hover=mouse.x>260&&mouse.x<540&&mouse.y>b.y&&mouse.y<b.y+48;
+    drawBtn(260,b.y,280,48,b.label,hover);
+  }
+  ctx.textAlign='left';
+
+  if(consumeClick()){
+    if(mouse.x>260&&mouse.x<540){
+      if(mouse.y>340&&mouse.y<388)startTransition(()=>{gameState='charSelect'});
+      if(mouse.y>400&&mouse.y<448)startTransition(()=>{gameState='title'});
+    }
+  }
+}
+
+// ===== TRANSITIONS =====
+let transitionCallback=null;
+let transitionPhase=0; // 0=none, 1=fading out, 2=fading in
+let transitionTimer=0;
+const TRANS_FRAMES=8;
+function startTransition(cb){
+  if(transitionPhase>0)return; // prevent double-transitions
+  transitionPhase=1;transitionTimer=TRANS_FRAMES;transitionCallback=cb;
+}
+function updateTransition(){
+  if(transitionPhase===0)return;
+  transitionTimer--;
+  if(transitionPhase===1){
+    transitionAlpha=transitionTimer/TRANS_FRAMES; // 1→0 (screen fades out)
+    if(transitionTimer<=0){
+      if(transitionCallback){transitionCallback();transitionCallback=null}
+      transitionPhase=2;transitionTimer=TRANS_FRAMES;
+    }
+  } else if(transitionPhase===2){
+    transitionAlpha=1-(transitionTimer/TRANS_FRAMES); // 0→1 (screen fades in)
+    if(transitionTimer<=0){
+      transitionPhase=0;transitionAlpha=1;
+    }
+  }
+}
+function isTransitioning(){return transitionPhase>0}
+
+// ===== MAIN LOOP =====
+function update(){
+  switch(gameState){
+    case'exploration':updateExploration();break;
+    case'combat':updateCombat();break;
+  }
+  updateParticles();
+  updateFloatingTexts();
+  updateShake();
+}
+
+function draw(){
+  // Bulletproof canvas reset every frame
+  ctx.globalAlpha=1;
+  ctx.globalCompositeOperation='source-over';
+  ctx.clearRect(0,0,W,H);
+
+  ctx.save();
+  ctx.translate(shake.x,shake.y);
+
+  // Apply transition fade via globalAlpha (NOT an overlay)
+  updateTransition();
+  if(transitionPhase>0)ctx.globalAlpha=Math.max(0,Math.min(1,transitionAlpha));
+
+  ctx.fillStyle=C.shadow;ctx.fillRect(-10,-10,W+20,H+20);
+
+  switch(gameState){
+    case'title':drawTitle();break;
+    case'charSelect':drawCharSelect();break;
+    case'upgrades':drawUpgrades();break;
+    case'instructions':drawInstructions();break;
+    case'exploration':drawRoom();drawHUD();break;
+    case'combat':drawRoom();drawHUD();drawCombat();break;
+    case'shop':drawRoom();drawHUD();drawShop();break;
+    case'abilityPickup':drawRoom();drawHUD();drawAbilityPickup();break;
+    case'pause':
+      if(prevState==='exploration'){drawRoom();drawHUD()}
+      else if(prevState==='combat'){drawRoom();drawHUD();drawCombat()}
+      drawPause();break;
+    case'abilityView':drawAbilityView();break;
+    case'floorTransition':drawFloorTransition();break;
+    case'gameOver':drawGameOver();break;
+    case'victory':drawVictory();break;
+  }
+
+  // Reset alpha before particles/text so they render fully
+  ctx.globalAlpha=1;
+  drawParticles();
+  drawFloatingTexts();
+
+  // CODY cheat flash text
+  if(cheatFlashTimer>0){
+    cheatFlashTimer--;
+    const a=Math.min(1,cheatFlashTimer/15);
+    ctx.globalAlpha=a;
+    ctx.fillStyle=C.gold;ctx.font='bold 32px monospace';ctx.textAlign='center';
+    ctx.fillText('FLOOR SKIPPED',W/2,H/2);
+    ctx.textAlign='left';ctx.globalAlpha=1;
+  }
+
+  ctx.restore();
+  // Final safety reset
+  ctx.globalAlpha=1;
+}
+
+function gameLoop(){
+  frameCount++;
+  update();
+  draw();
+  mouse.clicked=false;
+  requestAnimationFrame(gameLoop);
+}
+
+gameLoop();
+</script>
+</body>
+</html>

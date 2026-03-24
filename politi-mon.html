@@ -1,0 +1,3195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Politi-Mon: Gotta Lobby 'Em All</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #1a1a2e;
+            font-family: Arial, sans-serif;
+        }
+        #gameContainer { background-color: #000; border: 4px solid #2C3E50; }
+        canvas { display: block; background-color: #000; }
+    </style>
+</head>
+<body>
+<div id="gameContainer">
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+</div>
+<script>
+// === CONFIGURATION ===
+const CONFIG = {
+    canvasWidth: 800,
+    canvasHeight: 600,
+    tileSize: 32,
+    dcMapWidth: 30,
+    dcMapHeight: 25,
+    lobbyMapWidth: 15,
+    lobbyMapHeight: 12,
+    // Movement throttle: ms between steps when key held
+    moveDelay: 150,
+    encounterRate: 0.15,
+    debateBaseTime: 5000,
+    debateHPBonusPerPct: 100,
+    bossDebateThreshold: 0.20,
+    wildDebateThreshold: 0.30,
+    xpBase: 30
+};
+const COLORS = {
+    darkBlue: '#2C3E50',
+    red: '#E74C3C',
+    white: '#ECF0F1',
+    gold: '#F39C12',
+    teal: '#1ABC9C',
+    darkText: '#1A1A2E',
+    black: '#000000',
+    darkGray: '#34495E',
+    lightGray: '#BDC3C7',
+    green: '#27AE60',
+    brown: '#8B4513',
+    rallyGround: '#3D7A3D'
+};
+const SCREENS = {
+    TITLE: 'title',
+    INTRO: 'intro',
+    OVERWORLD: 'overworld',
+    LOBBY_HQ: 'lobby_hq',
+    PAUSE_MENU: 'pause_menu',
+    BATTLE: 'battle',
+    BATTLE_TRANSITION: 'battle_transition',
+    BLACKOUT: 'blackout',
+    REGION_TRANSITION: 'region_transition',
+    VICTORY: 'victory'
+};
+// === AUDIO (SFX) ===
+let audioCtx = null;
+function initAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}
+const sfx = {
+    menuSelect() {
+        if (!audioCtx) initAudio();
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.frequency.value = 800; osc.type = 'square';
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.05);
+        osc.start(now); osc.stop(now + 0.05);
+    },
+    menuConfirm() {
+        if (!audioCtx) initAudio();
+        const now = audioCtx.currentTime;
+        [600, 900].forEach((freq, i) => {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.frequency.value = freq; osc.type = 'square';
+            gain.gain.setValueAtTime(0.1, now + i * 0.05);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + i * 0.05 + 0.05);
+            osc.start(now + i * 0.05); osc.stop(now + i * 0.05 + 0.05);
+        });
+    },
+    dialogue() {
+        if (!audioCtx) initAudio();
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.frequency.value = 700; osc.type = 'square';
+        gain.gain.setValueAtTime(0.08, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.03);
+        osc.start(now); osc.stop(now + 0.03);
+    },
+    step() {
+        if (!audioCtx) initAudio();
+        const now = audioCtx.currentTime;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.frequency.value = 300; osc.type = 'square';
+        gain.gain.setValueAtTime(0.04, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+        osc.start(now); osc.stop(now + 0.04);
+    }
+};
+// === DATA: POLITICIANS ===
+const POLITICIANS = [
+    {
+        id: 'biden', name: 'Joe Biden', type: 'Diplomacy',
+        baseStats: { hp: 45, attack: 8, defense: 12, speed: 5 },
+        moves: ['ice_cream_diplomacy', 'filibuster', 'executive_order', 'bipartisan_handshake'],
+        learnset: [{ level: 1, moveId: 'ice_cream_diplomacy' }, { level: 3, moveId: 'filibuster' }, { level: 5, moveId: 'executive_order' }, { level: 10, moveId: 'bipartisan_handshake' }],
+        catchArguments: ['Promise him two scoops of ice cream.', 'Offer a firm handshake.', 'Mention Scranton, PA.'],
+        correctArgument: 0,
+        pokedexBio: 'The ice cream aficionado in chief.',
+        isBoss: false, region: 'dc', levelRange: [3, 7]
+    },
+    {
+        id: 'trump', name: 'Donald Trump', type: 'Populism',
+        baseStats: { hp: 55, attack: 10, defense: 8, speed: 7 },
+        moves: ['tweet_storm', 'rally_cry', 'fake_news', 'wall_build'],
+        learnset: [{ level: 1, moveId: 'tweet_storm' }, { level: 3, moveId: 'rally_cry' }, { level: 5, moveId: 'fake_news' }, { level: 10, moveId: 'wall_build' }],
+        catchArguments: ["Tell him he's winning bigly.", 'Show him a poll he\'s losing.', 'Offer a golden escalator.'],
+        correctArgument: 0,
+        pokedexBio: "The deal-maker who writes his own rules.",
+        isBoss: false, region: 'dc', levelRange: [3, 7]
+    },
+    {
+        id: 'macron', name: 'Emmanuel Macron', type: 'Diplomacy',
+        baseStats: { hp: 35, attack: 9, defense: 9, speed: 12 },
+        moves: ['baguette_bash', 'charm_offensive', 'elysee_elbow', 'eu_sanction'],
+        learnset: [{ level: 1, moveId: 'baguette_bash' }, { level: 5, moveId: 'charm_offensive' }, { level: 7, moveId: 'elysee_elbow' }, { level: 10, moveId: 'eu_sanction' }],
+        catchArguments: ['Compliment his English.', 'Discuss EU reform.', 'Offer a croissant.'],
+        correctArgument: 2,
+        pokedexBio: 'The youngest French president with the oldest ideas.',
+        isBoss: false, region: 'europe', levelRange: [5, 9]
+    },
+    {
+        id: 'johnson', name: 'Boris Johnson', type: 'Populism',
+        baseStats: { hp: 50, attack: 11, defense: 6, speed: 8 },
+        moves: ['messy_hair_whirlwind', 'brexit_blunder', 'jolly_good_bluff', 'parliament_shout'],
+        learnset: [{ level: 1, moveId: 'messy_hair_whirlwind' }, { level: 5, moveId: 'brexit_blunder' }, { level: 7, moveId: 'jolly_good_bluff' }, { level: 10, moveId: 'parliament_shout' }],
+        catchArguments: ['Mention Brexit is oven-ready.', 'Offer a bus with a large number on it.', 'Say crikey.'],
+        correctArgument: 1,
+        pokedexBio: 'The blond bombshell of British politics.',
+        isBoss: false, region: 'europe', levelRange: [5, 9]
+    },
+    {
+        id: 'xi', name: 'Xi Jinping', type: 'Military',
+        baseStats: { hp: 50, attack: 13, defense: 13, speed: 6 },
+        moves: ['great_wall_block', 'panda_punch', 'silk_road_supply', 'dragon_parade'],
+        learnset: [{ level: 1, moveId: 'great_wall_block' }, { level: 7, moveId: 'panda_punch' }, { level: 9, moveId: 'silk_road_supply' }, { level: 10, moveId: 'dragon_parade' }],
+        catchArguments: ['Propose a mutual trade deal.', 'Show him a panda documentary.', 'Discuss Taiwan respectfully.'],
+        correctArgument: 0,
+        pokedexBio: "President for life, just don't say that out loud.",
+        isBoss: false, region: 'asia', levelRange: [7, 11]
+    },
+    {
+        id: 'kim', name: 'Kim Jong-un', type: 'Military',
+        baseStats: { hp: 35, attack: 16, defense: 7, speed: 8 },
+        moves: ['missile_tantrum', 'parade_march', 'supreme_decree', 'nuclear_option'],
+        learnset: [{ level: 1, moveId: 'missile_tantrum' }, { level: 7, moveId: 'parade_march' }, { level: 9, moveId: 'supreme_decree' }, { level: 15, moveId: 'nuclear_option' }],
+        catchArguments: ['Flatter his missile collection.', 'Offer Dennis Rodman as envoy.', "Mention his father's legacy."],
+        correctArgument: 1,
+        pokedexBio: 'The hermit who launched a thousand missiles.',
+        isBoss: false, region: 'asia', levelRange: [7, 11]
+    },
+    {
+        id: 'greta', name: 'Greta Thunberg', type: 'Environmental',
+        baseStats: { hp: 40, attack: 7, defense: 10, speed: 11 },
+        moves: ['how_dare_you', 'climate_strike', 'protest_sign_smack', 'global_warming'],
+        learnset: [{ level: 1, moveId: 'how_dare_you' }, { level: 9, moveId: 'climate_strike' }, { level: 10, moveId: 'protest_sign_smack' }, { level: 12, moveId: 'global_warming' }],
+        catchArguments: ['How dare you even try.', 'Promise net zero by 2050.', 'Plant a tree in front of her.'],
+        correctArgument: 1,
+        pokedexBio: 'She skipped school to save the world.',
+        isBoss: false, region: 'globalsouth', levelRange: [9, 12]
+    },
+    {
+        id: 'lula', name: 'Lula da Silva', type: 'Environmental',
+        baseStats: { hp: 48, attack: 9, defense: 10, speed: 8 },
+        moves: ['rainforest_rally', 'amazon_heal', 'samba_shuffle', 'carnival_chaos'],
+        learnset: [{ level: 1, moveId: 'rainforest_rally' }, { level: 9, moveId: 'amazon_heal' }, { level: 10, moveId: 'samba_shuffle' }, { level: 12, moveId: 'carnival_chaos' }],
+        catchArguments: ['Promise Amazon conservation.', 'Offer a carnival float ride.', "Discuss Brazil's soccer legacy."],
+        correctArgument: 0,
+        pokedexBio: 'The comeback kid of Latin American politics.',
+        isBoss: false, region: 'globalsouth', levelRange: [9, 12]
+    },
+    {
+        id: 'putin', name: 'Vladimir Putin', type: 'Intelligence',
+        baseStats: { hp: 65, attack: 14, defense: 11, speed: 13 },
+        moves: ['shirtless_intimidation', 'kgb_takedown', 'bear_ride', 'cyber_attack'],
+        learnset: [{ level: 1, moveId: 'shirtless_intimidation' }, { level: 15, moveId: 'kgb_takedown' }, { level: 17, moveId: 'bear_ride' }, { level: 20, moveId: 'cyber_attack' }],
+        catchArguments: ['Challenge him to a chess match.', 'Offer a horse for a photo op.', 'Say you respect his strength.'],
+        correctArgument: 1,
+        pokedexBio: 'The chess master who plays bare-chested.',
+        isBoss: true, region: 'unsummit', levelRange: [15, 20]
+    },
+    {
+        id: 'elizabeth', name: "Queen Elizabeth's Ghost", type: 'Intelligence',
+        baseStats: { hp: 70, attack: 12, defense: 12, speed: 12 },
+        moves: ['royal_decree', 'phantom_crown', 'spectral_tea_time', 'imperial_haunt'],
+        learnset: [{ level: 1, moveId: 'royal_decree' }, { level: 15, moveId: 'phantom_crown' }, { level: 17, moveId: 'spectral_tea_time' }, { level: 20, moveId: 'imperial_haunt' }],
+        catchArguments: ['Bow and offer Earl Grey.', 'Mention Charles takes over.', 'Ask about the corgis.'],
+        correctArgument: 0,
+        pokedexBio: 'She serves the realm from beyond the veil.',
+        isBoss: true, region: 'unsummit', levelRange: [15, 20]
+    }
+];
+// === DATA: MOVES ===
+const MOVES = [
+    { id: 'ice_cream_diplomacy', name: 'Ice Cream Diplomacy', type: 'Diplomacy', power: 40, accuracy: 95, effect: 'heal', effectValue: 3, description: 'Heals user 3 HP.' },
+    { id: 'filibuster', name: 'Filibuster', type: 'Diplomacy', power: 0, accuracy: 100, effect: 'lower_speed', effectValue: 1, description: 'Lowers opponent speed.' },
+    { id: 'executive_order', name: 'Executive Order', type: 'Diplomacy', power: 70, accuracy: 85, effect: null, effectValue: 0, description: 'Decisive strike.' },
+    { id: 'bipartisan_handshake', name: 'Bipartisan Handshake', type: 'Diplomacy', power: 30, accuracy: 100, effect: 'heal', effectValue: 8, description: 'Heals 8 HP.' },
+    { id: 'tweet_storm', name: 'Tweet Storm', type: 'Populism', power: 45, accuracy: 90, effect: 'lower_accuracy', effectValue: 1, description: 'Lowers opponent accuracy.' },
+    { id: 'rally_cry', name: 'Rally Cry', type: 'Populism', power: 0, accuracy: 100, effect: 'raise_attack', effectValue: 1, description: 'Raises attack.' },
+    { id: 'fake_news', name: 'Fake News', type: 'Populism', power: 0, accuracy: 70, effect: 'confuse', effectValue: 1, description: 'May confuse opponent.' },
+    { id: 'wall_build', name: 'Wall Build', type: 'Populism', power: 0, accuracy: 100, effect: 'raise_defense', effectValue: 1, description: 'Raises defense.' },
+    { id: 'baguette_bash', name: 'Baguette Bash', type: 'Diplomacy', power: 55, accuracy: 95, effect: null, effectValue: 0, description: 'A crispy strike.' },
+    { id: 'charm_offensive', name: 'Charm Offensive', type: 'Diplomacy', power: 0, accuracy: 100, effect: 'lower_atk_def', effectValue: 1, description: 'Lowers atk and def.' },
+    { id: 'elysee_elbow', name: 'Elysee Elbow', type: 'Diplomacy', power: 65, accuracy: 85, effect: null, effectValue: 0, description: 'Sharp diplomatic jab.' },
+    { id: 'eu_sanction', name: 'EU Sanction', type: 'Diplomacy', power: 50, accuracy: 90, effect: 'lower_speed', effectValue: 1, description: 'Lowers speed.' },
+    { id: 'messy_hair_whirlwind', name: 'Messy Hair Whirlwind', type: 'Populism', power: 60, accuracy: 80, effect: 'confuse', effectValue: 1, description: 'May confuse.' },
+    { id: 'brexit_blunder', name: 'Brexit Blunder', type: 'Populism', power: 70, accuracy: 60, effect: 'recoil', effectValue: 20, description: 'High power, recoil.' },
+    { id: 'jolly_good_bluff', name: 'Jolly Good Bluff', type: 'Populism', power: 0, accuracy: 70, effect: 'raise_evasion', effectValue: 1, description: 'Raises evasion.' },
+    { id: 'parliament_shout', name: 'Parliament Shout', type: 'Populism', power: 50, accuracy: 95, effect: 'lower_speed', effectValue: 1, description: 'Lowers speed.' },
+    { id: 'great_wall_block', name: 'Great Wall Block', type: 'Military', power: 0, accuracy: 100, effect: 'raise_defense', effectValue: 1, description: 'Raises defense.' },
+    { id: 'panda_punch', name: 'Panda Punch', type: 'Military', power: 80, accuracy: 90, effect: null, effectValue: 0, description: 'Powerful strike.' },
+    { id: 'silk_road_supply', name: 'Silk Road Supply', type: 'Military', power: 0, accuracy: 100, effect: 'heal', effectValue: 8, description: 'Heals 8 HP.' },
+    { id: 'dragon_parade', name: 'Dragon Parade', type: 'Military', power: 80, accuracy: 85, effect: 'lower_all_stats', effectValue: 1, description: 'Lowers all stats.' },
+    { id: 'missile_tantrum', name: 'Missile Tantrum', type: 'Military', power: 90, accuracy: 70, effect: 'recoil', effectValue: 25, description: 'Massive power, recoil.' },
+    { id: 'parade_march', name: 'Parade March', type: 'Military', power: 0, accuracy: 100, effect: 'raise_attack', effectValue: 1, description: 'Raises attack.' },
+    { id: 'supreme_decree', name: 'Supreme Decree', type: 'Military', power: 60, accuracy: 90, effect: 'disable_move', effectValue: 1, description: 'Disables a move.' },
+    { id: 'nuclear_option', name: 'Nuclear Option', type: 'Military', power: 120, accuracy: 50, effect: 'lower_all_stats', effectValue: 2, description: 'Catastrophic, inaccurate.' },
+    { id: 'how_dare_you', name: 'How Dare You', type: 'Environmental', power: 55, accuracy: 100, effect: null, effectValue: 0, description: 'Passionate strike.' },
+    { id: 'climate_strike', name: 'Climate Strike', type: 'Environmental', power: 65, accuracy: 90, effect: 'lower_speed', effectValue: 1, description: 'Lowers speed.' },
+    { id: 'protest_sign_smack', name: 'Protest Sign Smack', type: 'Environmental', power: 70, accuracy: 85, effect: null, effectValue: 0, description: 'Cardboard hurts.' },
+    { id: 'global_warming', name: 'Global Warming', type: 'Environmental', power: 50, accuracy: 95, effect: 'lower_defense', effectValue: 1, description: 'Lowers defense.' },
+    { id: 'rainforest_rally', name: 'Rainforest Rally', type: 'Environmental', power: 0, accuracy: 100, effect: 'raise_attack', effectValue: 1, description: 'Raises attack.' },
+    { id: 'amazon_heal', name: 'Amazon Heal', type: 'Environmental', power: 0, accuracy: 100, effect: 'heal', effectValue: 10, description: 'Heals 10 HP.' },
+    { id: 'samba_shuffle', name: 'Samba Shuffle', type: 'Environmental', power: 45, accuracy: 90, effect: 'raise_evasion', effectValue: 1, description: 'Raises evasion.' },
+    { id: 'carnival_chaos', name: 'Carnival Chaos', type: 'Environmental', power: 70, accuracy: 80, effect: 'confuse', effectValue: 1, description: 'May confuse.' },
+    { id: 'shirtless_intimidation', name: 'Shirtless Intimidation', type: 'Intelligence', power: 0, accuracy: 100, effect: 'lower_atk_def', effectValue: 1, description: 'Lowers atk and def.' },
+    { id: 'kgb_takedown', name: 'KGB Takedown', type: 'Intelligence', power: 90, accuracy: 90, effect: 'disable_move', effectValue: 1, description: 'High power, disable.' },
+    { id: 'bear_ride', name: 'Bear Ride', type: 'Intelligence', power: 70, accuracy: 85, effect: null, effectValue: 0, description: 'Mounted charge.' },
+    { id: 'cyber_attack', name: 'Cyber Attack', type: 'Intelligence', power: 80, accuracy: 90, effect: 'lower_accuracy', effectValue: 1, description: 'Lowers accuracy.' },
+    { id: 'royal_decree', name: 'Royal Decree', type: 'Intelligence', power: 0, accuracy: 100, effect: 'raise_defense', effectValue: 1, description: 'Raises defense.' },
+    { id: 'phantom_crown', name: 'Phantom Crown', type: 'Intelligence', power: 95, accuracy: 85, effect: null, effectValue: 0, description: 'Ghostly royal strike.' },
+    { id: 'spectral_tea_time', name: 'Spectral Tea Time', type: 'Intelligence', power: 0, accuracy: 100, effect: 'heal', effectValue: 10, description: 'Heals 10 HP.' },
+    { id: 'imperial_haunt', name: 'Imperial Haunt', type: 'Intelligence', power: 100, accuracy: 80, effect: 'lower_all_stats', effectValue: 1, description: 'Lowers all stats.' }
+];
+// === DATA: ITEMS ===
+const ITEMS = [
+    { id: 'coffee', name: 'Coffee', type: 'heal', healAmount: 20, cost: 0, description: 'Heals 20 HP. Free at Lobby HQs.' },
+    { id: 'campaign_donation', name: 'Campaign Donation', type: 'heal', healAmount: 50, cost: 100, description: 'Heals 50 HP.' },
+    { id: 'scandal_shield', name: 'Scandal Shield', type: 'shield', cost: 200, description: 'Blocks next incoming attack.' },
+    { id: 'filibuster_scroll', name: 'Filibuster Scroll', type: 'priority', cost: 150, description: 'Guarantees moving first next turn.' }
+];
+// === DATA: TYPE CHART ===
+const TYPE_CHART = {
+    Diplomacy:   { strongAgainst: ['Military'],       weakAgainst: ['Populism'] },
+    Military:    { strongAgainst: ['Intelligence'],   weakAgainst: ['Diplomacy'] },
+    Intelligence:{ strongAgainst: ['Populism'],       weakAgainst: ['Military'] },
+    Populism:    { strongAgainst: ['Environmental'],  weakAgainst: ['Intelligence'] },
+    Environmental:{ strongAgainst: ['Diplomacy'],     weakAgainst: ['Populism'] }
+};
+// === GAME STATE ===
+let gameState = {
+    playerName: '',
+    funds: 500,
+    currentRegion: 'dc',
+    currentMap: 'dc',
+    playerPos: { x: 15, y: 13 },
+    party: [],
+    pc: [],
+    bag: [{id:'coffee', qty:3}, {id:'campaign_donation', qty:1}],
+    pokedex: {},
+    lastLobbyHQ: 'dc',
+    saveTimestamp: null
+};
+let gameScreen = SCREENS.TITLE;
+let prevScreen = SCREENS.OVERWORLD;
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+// === INPUT STATE ===
+// Keys held down
+const keysHeld = { up: false, down: false, left: false, right: false };
+// One-shot flags (set on keydown, consumed on first use)
+const keysPressed = { enter: false, space: false, escape: false };
+// Movement timing: only step once per moveDelay ms when held
+let lastMoveTime = 0;
+// First keydown triggers immediate move; subsequent moves wait moveDelay
+const keyFirstPress = { up: false, down: false, left: false, right: false };
+let playerDirection = 'down';
+let playerIdleBob = false;
+let lastIdleBobTime = 0;
+let cameraPos = { x: 0, y: 0 };
+// === PIXEL FONT RENDERER ===
+const PIXEL_FONT = {
+    'A':[[0,1,1,0,0],[1,0,0,1,0],[1,1,1,1,0],[1,0,0,1,0],[1,0,0,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'B':[[1,1,1,0,0],[1,0,0,1,0],[1,1,1,0,0],[1,0,0,1,0],[1,1,1,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'C':[[0,1,1,1,0],[1,0,0,0,0],[1,0,0,0,0],[1,0,0,0,0],[0,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'D':[[1,1,1,0,0],[1,0,0,1,0],[1,0,0,1,0],[1,0,0,1,0],[1,1,1,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'E':[[1,1,1,1,0],[1,0,0,0,0],[1,1,1,0,0],[1,0,0,0,0],[1,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'F':[[1,1,1,1,0],[1,0,0,0,0],[1,1,1,0,0],[1,0,0,0,0],[1,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'G':[[0,1,1,1,0],[1,0,0,0,0],[1,0,1,1,0],[1,0,0,1,0],[0,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'H':[[1,0,0,1,0],[1,0,0,1,0],[1,1,1,1,0],[1,0,0,1,0],[1,0,0,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'I':[[1,1,1,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,1,0,0,0],[1,1,1,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'J':[[0,1,1,1,0],[0,0,1,0,0],[0,0,1,0,0],[1,0,1,0,0],[0,1,1,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'K':[[1,0,0,1,0],[1,0,1,0,0],[1,1,0,0,0],[1,0,1,0,0],[1,0,0,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'L':[[1,0,0,0,0],[1,0,0,0,0],[1,0,0,0,0],[1,0,0,0,0],[1,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'M':[[1,0,0,0,1],[1,1,0,1,1],[1,0,1,0,1],[1,0,0,0,1],[1,0,0,0,1],[0,0,0,0,0],[0,0,0,0,0]],
+    'N':[[1,0,0,0,1],[1,1,0,0,1],[1,0,1,0,1],[1,0,0,1,1],[1,0,0,0,1],[0,0,0,0,0],[0,0,0,0,0]],
+    'O':[[0,1,1,1,0],[1,0,0,0,1],[1,0,0,0,1],[1,0,0,0,1],[0,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'P':[[1,1,1,0,0],[1,0,0,1,0],[1,1,1,0,0],[1,0,0,0,0],[1,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'Q':[[0,1,1,1,0],[1,0,0,0,1],[1,0,0,0,1],[1,0,1,0,1],[0,1,1,1,1],[0,0,0,0,0],[0,0,0,0,0]],
+    'R':[[1,1,1,0,0],[1,0,0,1,0],[1,1,1,0,0],[1,0,1,0,0],[1,0,0,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'S':[[0,1,1,1,0],[1,0,0,0,0],[0,1,1,0,0],[0,0,0,1,0],[1,1,1,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'T':[[1,1,1,1,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'U':[[1,0,0,0,1],[1,0,0,0,1],[1,0,0,0,1],[1,0,0,0,1],[0,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'V':[[1,0,0,0,1],[1,0,0,0,1],[1,0,0,0,1],[0,1,0,1,0],[0,0,1,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'W':[[1,0,0,0,1],[1,0,0,0,1],[1,0,1,0,1],[1,1,0,1,1],[1,0,0,0,1],[0,0,0,0,0],[0,0,0,0,0]],
+    'X':[[1,0,0,0,1],[0,1,0,1,0],[0,0,1,0,0],[0,1,0,1,0],[1,0,0,0,1],[0,0,0,0,0],[0,0,0,0,0]],
+    'Y':[[1,0,0,0,1],[0,1,0,1,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'Z':[[1,1,1,1,0],[0,0,0,1,0],[0,0,1,0,0],[0,1,0,0,0],[1,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    'a':[[0,0,0,0,0],[0,1,1,1,0],[0,0,0,1,0],[0,1,1,1,0],[1,0,0,1,0],[0,1,1,1,0],[0,0,0,0,0]],
+    'b':[[1,0,0,0,0],[1,0,0,0,0],[1,1,1,0,0],[1,0,0,1,0],[1,0,0,1,0],[0,1,1,0,0],[0,0,0,0,0]],
+    'c':[[0,0,0,0,0],[0,1,1,1,0],[1,0,0,0,0],[1,0,0,0,0],[1,0,0,0,0],[0,1,1,1,0],[0,0,0,0,0]],
+    'd':[[0,0,0,1,0],[0,0,0,1,0],[0,1,1,1,0],[1,0,0,1,0],[1,0,0,1,0],[0,1,1,1,0],[0,0,0,0,0]],
+    'e':[[0,0,0,0,0],[0,1,1,1,0],[1,0,0,1,0],[1,1,1,1,0],[1,0,0,0,0],[0,1,1,1,0],[0,0,0,0,0]],
+    'f':[[0,0,1,1,0],[0,1,0,0,0],[1,1,1,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,0,0,0,0]],
+    'g':[[0,0,0,0,0],[0,1,1,1,0],[1,0,0,1,0],[1,0,0,1,0],[0,1,1,1,0],[0,0,0,1,0],[0,1,1,0,0]],
+    'h':[[1,0,0,0,0],[1,0,0,0,0],[1,1,1,0,0],[1,0,0,1,0],[1,0,0,1,0],[1,0,0,1,0],[0,0,0,0,0]],
+    'i':[[0,1,0,0,0],[0,0,0,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,1,1,0,0],[0,0,0,0,0]],
+    'j':[[0,0,1,0,0],[0,0,0,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[1,0,1,0,0],[0,1,0,0,0]],
+    'k':[[1,0,0,0,0],[1,0,0,0,0],[1,0,1,0,0],[1,1,0,0,0],[1,0,1,0,0],[1,0,0,1,0],[0,0,0,0,0]],
+    'l':[[0,1,0,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,0,1,0,0],[0,0,0,0,0]],
+    'm':[[0,0,0,0,0],[1,1,0,1,0],[1,0,1,0,1],[1,0,0,0,1],[1,0,0,0,1],[1,0,0,0,1],[0,0,0,0,0]],
+    'n':[[0,0,0,0,0],[1,1,1,0,0],[1,0,0,1,0],[1,0,0,1,0],[1,0,0,1,0],[1,0,0,1,0],[0,0,0,0,0]],
+    'o':[[0,0,0,0,0],[0,1,1,1,0],[1,0,0,0,1],[1,0,0,0,1],[1,0,0,0,1],[0,1,1,1,0],[0,0,0,0,0]],
+    'p':[[0,0,0,0,0],[1,1,1,0,0],[1,0,0,1,0],[1,1,1,0,0],[1,0,0,0,0],[1,0,0,0,0],[0,0,0,0,0]],
+    'q':[[0,0,0,0,0],[0,1,1,1,0],[1,0,0,1,0],[0,1,1,1,0],[0,0,0,1,0],[0,0,0,1,0],[0,0,0,0,0]],
+    'r':[[0,0,0,0,0],[1,1,1,0,0],[1,0,0,1,0],[1,0,0,0,0],[1,0,0,0,0],[1,0,0,0,0],[0,0,0,0,0]],
+    's':[[0,0,0,0,0],[0,1,1,1,0],[1,0,0,0,0],[0,1,1,0,0],[0,0,0,1,0],[1,1,1,0,0],[0,0,0,0,0]],
+    't':[[0,1,0,0,0],[1,1,1,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,0,1,1,0],[0,0,0,0,0]],
+    'u':[[0,0,0,0,0],[1,0,0,1,0],[1,0,0,1,0],[1,0,0,1,0],[1,0,0,1,0],[0,1,1,0,0],[0,0,0,0,0]],
+    'v':[[0,0,0,0,0],[1,0,0,0,1],[1,0,0,0,1],[1,0,0,0,1],[0,1,0,1,0],[0,0,1,0,0],[0,0,0,0,0]],
+    'w':[[0,0,0,0,0],[1,0,0,0,1],[1,0,0,0,1],[1,0,1,0,1],[1,1,0,1,1],[1,0,0,0,1],[0,0,0,0,0]],
+    'x':[[0,0,0,0,0],[1,0,0,0,1],[0,1,0,1,0],[0,0,1,0,0],[0,1,0,1,0],[1,0,0,0,1],[0,0,0,0,0]],
+    'y':[[0,0,0,0,0],[1,0,0,1,0],[1,0,0,1,0],[0,1,1,1,0],[0,0,0,1,0],[0,1,1,0,0],[0,0,0,0,0]],
+    'z':[[0,0,0,0,0],[1,1,1,1,0],[0,0,0,1,0],[0,0,1,0,0],[0,1,0,0,0],[1,1,1,1,0],[0,0,0,0,0]],
+    '0':[[0,1,1,1,0],[1,0,0,1,1],[1,0,1,0,1],[1,1,0,0,1],[0,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '1':[[0,0,1,0,0],[0,1,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '2':[[0,1,1,1,0],[1,0,0,0,1],[0,0,0,1,0],[0,0,1,0,0],[1,1,1,1,1],[0,0,0,0,0],[0,0,0,0,0]],
+    '3':[[0,1,1,1,0],[1,0,0,0,1],[0,0,1,1,0],[1,0,0,0,1],[0,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '4':[[1,0,0,1,0],[1,0,0,1,0],[1,1,1,1,1],[0,0,0,1,0],[0,0,0,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '5':[[1,1,1,1,1],[1,0,0,0,0],[1,1,1,1,0],[0,0,0,0,1],[1,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '6':[[0,1,1,1,0],[1,0,0,0,0],[1,1,1,1,0],[1,0,0,0,1],[0,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '7':[[1,1,1,1,1],[0,0,0,0,1],[0,0,0,1,0],[0,0,1,0,0],[0,1,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '8':[[0,1,1,1,0],[1,0,0,0,1],[0,1,1,1,0],[1,0,0,0,1],[0,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '9':[[0,1,1,1,0],[1,0,0,0,1],[0,1,1,1,1],[0,0,0,0,1],[0,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '.':[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,1,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    ',':[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,1,0,0,0],[0,1,0,0,0],[1,0,0,0,0],[0,0,0,0,0]],
+    '!':[[0,1,0,0,0],[0,1,0,0,0],[0,1,0,0,0],[0,0,0,0,0],[0,1,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '?':[[0,1,1,1,0],[1,0,0,0,1],[0,0,0,1,0],[0,0,1,0,0],[0,0,0,0,0],[0,0,1,0,0],[0,0,0,0,0]],
+    ':':[[0,0,0,0,0],[0,1,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,1,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    "'":[[0,1,0,0,0],[0,1,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '"':[[1,0,1,0,0],[1,0,1,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    ' ':[[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '-':[[0,0,0,0,0],[0,0,0,0,0],[1,1,1,1,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0],[0,0,0,0,0]],
+    '(':[[0,0,1,0,0],[0,1,0,0,0],[1,0,0,0,0],[1,0,0,0,0],[0,1,0,0,0],[0,0,1,0,0],[0,0,0,0,0]],
+    ')':[[0,1,0,0,0],[0,0,1,0,0],[0,0,0,1,0],[0,0,0,1,0],[0,0,1,0,0],[0,1,0,0,0],[0,0,0,0,0]],
+    '/':[[0,0,0,1,0],[0,0,0,1,0],[0,0,1,0,0],[0,1,0,0,0],[1,0,0,0,0],[1,0,0,0,0],[0,0,0,0,0]]
+};
+function drawChar(char, x, y, scale, color) {
+    const bm = PIXEL_FONT[char] || PIXEL_FONT[' '];
+    ctx.fillStyle = color;
+    for (let r = 0; r < bm.length; r++)
+        for (let c = 0; c < bm[r].length; c++)
+            if (bm[r][c]) ctx.fillRect(x + c * scale, y + r * scale, scale, scale);
+}
+function drawText(text, x, y, scale, color) {
+    let cx = x;
+    for (const ch of text) { drawChar(ch, cx, y, scale, color); cx += 6 * scale; }
+}
+// === TILE TYPES ===
+const T = {
+    GROUND: 0, RALLY: 1, WALL: 2, TREE: 3, DOOR: 4,
+    NPC1: 5, NPC2: 6, NPC3: 7, SIGN: 8, GATE: 9,
+    RECEPTIONIST: 10, TERMINAL: 11, SHOPKEEPER: 12, EXIT_DOOR: 13
+};
+// Passable tiles (player can walk onto)
+const WALKABLE = new Set([T.GROUND, T.RALLY, T.DOOR, T.EXIT_DOOR, T.GATE]);
+function drawTile(type, sx, sy) {
+    const s = CONFIG.tileSize;
+    switch (type) {
+        case T.GROUND:
+            ctx.fillStyle = '#3A4A5C';
+            ctx.fillRect(sx, sy, s, s);
+            ctx.strokeStyle = '#2C3E50';
+            ctx.lineWidth = 0.5;
+            ctx.strokeRect(sx, sy, s, s);
+            break;
+        case T.RALLY:
+            // Slightly lighter green with texture to signal encounter zone
+            ctx.fillStyle = '#2D6A2D';
+            ctx.fillRect(sx, sy, s, s);
+            ctx.fillStyle = '#3D8A3D';
+            // Stipple pattern
+            for (let i = 0; i < 4; i++) {
+                ctx.fillRect(sx + 4 + i * 7, sy + 4, 2, 2);
+                ctx.fillRect(sx + 7 + i * 7, sy + 12, 2, 2);
+                ctx.fillRect(sx + 2 + i * 7, sy + 20, 2, 2);
+            }
+            ctx.strokeStyle = '#1A4A1A';
+            ctx.lineWidth = 0.5;
+            ctx.strokeRect(sx, sy, s, s);
+            break;
+        case T.WALL:
+            ctx.fillStyle = '#8E9EAE';
+            ctx.fillRect(sx, sy, s, s);
+            ctx.fillStyle = '#7A8C9C';
+            ctx.fillRect(sx + 2, sy + 2, s - 4, 10);
+            ctx.fillRect(sx + 2, sy + 18, s - 4, 10);
+            ctx.strokeStyle = '#2C3E50';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(sx, sy, s, s);
+            break;
+        case T.TREE:
+            ctx.fillStyle = '#3A4A5C';
+            ctx.fillRect(sx, sy, s, s);
+            ctx.fillStyle = '#6B3A2A';
+            ctx.fillRect(sx + 13, sy + 18, 6, 14);
+            ctx.fillStyle = '#1A6B1A';
+            ctx.beginPath();
+            ctx.arc(sx + 16, sy + 12, 10, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#2A8B2A';
+            ctx.beginPath();
+            ctx.arc(sx + 12, sy + 15, 7, 0, Math.PI * 2);
+            ctx.fill();
+            break;
+        case T.DOOR:
+            ctx.fillStyle = '#8B6914';
+            ctx.fillRect(sx, sy, s, s);
+            ctx.fillStyle = '#A07820';
+            ctx.fillRect(sx + 4, sy + 4, s - 8, s - 4);
+            ctx.fillStyle = COLORS.gold;
+            ctx.beginPath();
+            ctx.arc(sx + s - 8, sy + s / 2, 3, 0, Math.PI * 2);
+            ctx.fill();
+            // "HQ" label hint
+            drawText('HQ', sx + 5, sy + 8, 1, COLORS.gold);
+            break;
+        case T.EXIT_DOOR:
+            ctx.fillStyle = '#8B6914';
+            ctx.fillRect(sx, sy, s, s);
+            ctx.fillStyle = '#A07820';
+            ctx.fillRect(sx + 4, sy + 4, s - 8, s - 4);
+            ctx.fillStyle = COLORS.teal;
+            ctx.beginPath();
+            ctx.arc(sx + s - 8, sy + s / 2, 3, 0, Math.PI * 2);
+            ctx.fill();
+            drawText('OUT', sx + 2, sy + 8, 1, COLORS.teal);
+            break;
+        case T.NPC1:
+        case T.NPC2:
+        case T.NPC3:
+            ctx.fillStyle = '#3A4A5C'; ctx.fillRect(sx, sy, s, s);
+            // Body
+            ctx.fillStyle = '#2C3E50'; ctx.fillRect(sx+8, sy+14, 16, 14);
+            // Head
+            ctx.fillStyle = '#F5CBA7'; ctx.fillRect(sx+9, sy+6, 14, 12);
+            // Tiny eyes
+            ctx.fillStyle = '#2C3E50';
+            ctx.fillRect(sx+12, sy+9, 2, 2);
+            ctx.fillRect(sx+18, sy+9, 2, 2);
+            // Exclamation to signal interactable
+            ctx.fillStyle = COLORS.gold;
+            ctx.fillRect(sx+14, sy+1, 2, 4);
+            ctx.fillRect(sx+14, sy+6, 2, 1);
+            break;
+        case T.SIGN:
+            ctx.fillStyle = '#3A4A5C'; ctx.fillRect(sx, sy, s, s);
+            ctx.fillStyle = '#8B6914'; ctx.fillRect(sx+14, sy+16, 4, 16);
+            ctx.fillStyle = COLORS.white; ctx.fillRect(sx+4, sy+4, s-8, 14);
+            ctx.strokeStyle = COLORS.darkBlue; ctx.lineWidth = 1;
+            ctx.strokeRect(sx+4, sy+4, s-8, 14);
+            drawText('?', sx+12, sy+6, 1, COLORS.darkText);
+            break;
+        case T.GATE:
+            ctx.fillStyle = '#1A3A4C'; ctx.fillRect(sx, sy, s, s);
+            ctx.fillStyle = COLORS.teal;
+            ctx.fillRect(sx+2, sy+2, s-4, s-4);
+            ctx.fillStyle = '#0A2030'; ctx.fillRect(sx+8, sy+8, s-16, s-16);
+            drawText('>', sx+10, sy+12, 1, COLORS.teal);
+            break;
+        case T.RECEPTIONIST:
+            ctx.fillStyle = '#C8A8C8'; ctx.fillRect(sx, sy, s, s);
+            ctx.fillStyle = '#9A6A9A'; ctx.fillRect(sx+8, sy+14, 16, 14);
+            ctx.fillStyle = '#F5CBA7'; ctx.fillRect(sx+9, sy+6, 14, 12);
+            ctx.fillStyle = '#9A3A9A'; ctx.fillRect(sx+8, sy+2, 16, 8);
+            ctx.fillStyle = '#2C3E50'; ctx.fillRect(sx+12, sy+9, 2, 2); ctx.fillRect(sx+18, sy+9, 2, 2);
+            break;
+        case T.TERMINAL:
+            ctx.fillStyle = '#1A2A3C'; ctx.fillRect(sx, sy, s, s);
+            ctx.fillStyle = '#0A1A2C'; ctx.fillRect(sx+4, sy+4, s-8, s-10);
+            ctx.fillStyle = '#00FF88';
+            for (let i = 0; i < 3; i++) ctx.fillRect(sx+6, sy+7+i*5, 12+Math.sin(Date.now()/500+i)*4, 2);
+            ctx.fillStyle = '#555'; ctx.fillRect(sx+8, sy+s-8, s-16, 4);
+            break;
+        case T.SHOPKEEPER:
+            ctx.fillStyle = '#A8C8C8'; ctx.fillRect(sx, sy, s, s);
+            ctx.fillStyle = '#1A6A3A'; ctx.fillRect(sx+8, sy+14, 16, 14);
+            ctx.fillStyle = '#F5CBA7'; ctx.fillRect(sx+9, sy+6, 14, 12);
+            ctx.fillStyle = '#1A3A1A'; ctx.fillRect(sx+8, sy+2, 16, 8);
+            ctx.fillStyle = COLORS.gold; ctx.fillRect(sx+10, sy+4, 12, 2);
+            ctx.fillStyle = '#2C3E50'; ctx.fillRect(sx+12, sy+9, 2, 2); ctx.fillRect(sx+18, sy+9, 2, 2);
+            break;
+        default:
+            ctx.fillStyle = '#2A3A4C'; ctx.fillRect(sx, sy, s, s);
+    }
+}
+// === MAP DEFINITIONS ===
+function createDCMap() {
+    const W = CONFIG.dcMapWidth, H = CONFIG.dcMapHeight;
+    const m = Array.from({ length: H }, () => Array(W).fill(T.GROUND));
+    // Boundary walls
+    for (let x = 0; x < W; x++) { m[0][x] = T.WALL; m[H-1][x] = T.WALL; }
+    for (let y = 0; y < H; y++) { m[y][0] = T.WALL; m[y][W-1] = T.WALL; }
+    // Lobby HQ building block (cols 13-20, rows 5-11) with door at row 12
+    for (let y = 5; y <= 11; y++) for (let x = 13; x <= 20; x++) m[y][x] = T.WALL;
+    m[12][17] = T.DOOR;
+    // Trees
+    [[3,3],[8,3],[24,5],[26,8],[3,15],[26,20],[10,22],[22,15],[5,5],[20,3]].forEach(([x,y]) => { if (x>0&&x<W-1&&y>0&&y<H-1) m[y][x] = T.TREE; });
+    // Rally grounds (bottom-left area)
+    for (let y = 17; y <= 22; y++) for (let x = 2; x <= 11; x++) m[y][x] = T.RALLY;
+    // NPCs
+    m[8][11] = T.NPC1;
+    m[15][8] = T.NPC2;
+    m[20][20] = T.NPC3;
+    // Sign
+    m[4][17] = T.SIGN;
+    // Region gate (right edge)
+    m[12][28] = T.GATE;
+    return m;
+}
+function createLobbyMap() {
+    const W = CONFIG.lobbyMapWidth, H = CONFIG.lobbyMapHeight;
+    const m = Array.from({ length: H }, () => Array(W).fill(T.GROUND));
+    // Walls
+    for (let x = 0; x < W; x++) { m[0][x] = T.WALL; m[H-1][x] = T.WALL; }
+    for (let y = 0; y < H; y++) { m[y][0] = T.WALL; m[y][W-1] = T.WALL; }
+    // Carpet (interior visual)
+    for (let y = 1; y <= H-2; y++) for (let x = 1; x <= W-2; x++) m[y][x] = T.GROUND;
+    // NPCs / objects
+    m[2][3] = T.RECEPTIONIST;
+    m[2][11] = T.TERMINAL;
+    m[7][7] = T.SHOPKEEPER;
+    // Exit door at bottom center
+    m[10][7] = T.EXIT_DOOR;
+    return m;
+}
+const dcMap = createDCMap();
+const lobbyMap = createLobbyMap();
+// === UI: DIALOGUE BOX ===
+let dlg = { active: false, lines: [], lineIndex: 0, charIndex: 0, lastCharTime: 0 };
+function startDialogue(lines) {
+    dlg.active = true;
+    dlg.lines = lines;
+    dlg.lineIndex = 0;
+    dlg.charIndex = 0;
+    dlg.lastCharTime = performance.now();
+    sfx.dialogue();
+}
+function advanceDialogue() {
+    sfx.dialogue();
+    const line = dlg.lines[dlg.lineIndex];
+    if (dlg.charIndex < line.length) {
+        dlg.charIndex = line.length; // complete instantly
+    } else if (dlg.lineIndex < dlg.lines.length - 1) {
+        dlg.lineIndex++;
+        dlg.charIndex = 0;
+    } else {
+        dlg.active = false;
+    }
+}
+function updateDialogue(now) {
+    if (!dlg.active) return;
+    const line = dlg.lines[dlg.lineIndex];
+    const msPerChar = 1000 / 30;
+    while (dlg.charIndex < line.length && now - dlg.lastCharTime >= msPerChar) {
+        dlg.charIndex++;
+        dlg.lastCharTime += msPerChar;
+    }
+}
+function drawDialogue() {
+    if (!dlg.active) return;
+    const bh = 90, by = CONFIG.canvasHeight - bh;
+    ctx.fillStyle = COLORS.darkBlue;
+    ctx.fillRect(0, by, CONFIG.canvasWidth, bh);
+    ctx.strokeStyle = COLORS.gold;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(2, by + 2, CONFIG.canvasWidth - 4, bh - 4);
+    const line = dlg.lines[dlg.lineIndex];
+    const shown = line.substring(0, dlg.charIndex);
+    drawText(shown, 14, by + 12, 2, COLORS.white);
+    // Page indicator / continue arrow
+    if (dlg.charIndex >= line.length) {
+        const blink = Math.floor(performance.now() / 400) % 2 === 0;
+        if (blink) drawText('>', CONFIG.canvasWidth - 28, by + bh - 22, 2, COLORS.gold);
+    }
+    // Line counter if multi-line
+    if (dlg.lines.length > 1) {
+        drawText((dlg.lineIndex + 1) + '/' + dlg.lines.length, CONFIG.canvasWidth - 50, by + 12, 1, COLORS.lightGray);
+    }
+}
+// === OVERWORLD ENGINE ===
+let mapData = dcMap;
+let mapW = CONFIG.dcMapWidth, mapH = CONFIG.dcMapHeight;
+function getTile(x, y) {
+    if (x < 0 || x >= mapW || y < 0 || y >= mapH) return T.WALL;
+    return mapData[y][x];
+}
+function isWalkable(x, y) {
+    return WALKABLE.has(getTile(x, y));
+}
+function updateCamera() {
+    const px = gameState.playerPos.x * CONFIG.tileSize;
+    const py = gameState.playerPos.y * CONFIG.tileSize;
+    cameraPos.x = Math.max(0, Math.min(px - CONFIG.canvasWidth / 2, mapW * CONFIG.tileSize - CONFIG.canvasWidth));
+    cameraPos.y = Math.max(0, Math.min(py - CONFIG.canvasHeight / 2, mapH * CONFIG.tileSize - CONFIG.canvasHeight));
+}
+function tryMove(dx, dy) {
+    if (dlg.active) return false;
+    const nx = gameState.playerPos.x + dx;
+    const ny = gameState.playerPos.y + dy;
+    if (!isWalkable(nx, ny)) return false;
+    gameState.playerPos.x = nx;
+    gameState.playerPos.y = ny;
+    sfx.step();
+    lastIdleBobTime = performance.now();
+    // Tile events on landing
+    const tile = getTile(nx, ny);
+    if (gameState.currentMap === 'lobby') {
+        if (tile === T.EXIT_DOOR) exitRegionLobbyHQ();
+    } else {
+        if (tile === T.DOOR) enterRegionLobbyHQ();
+        else if (tile === T.GATE) handleGateStep(nx);
+        else if (tile === T.RALLY) checkRandomEncounter();
+    }
+    // Check boss collision in UN Summit
+    checkBossCollision();
+    return true;
+}
+// Check NPC in the direction the player is facing or adjacent
+function checkInteract() {
+    if (dlg.active) { advanceDialogue(); return; }
+    const { x, y } = gameState.playerPos;
+    // Check tile player is standing on (sign)
+    const standing = getTile(x, y);
+    // Check tile in facing direction
+    let fx = x, fy = y;
+    if (playerDirection === 'up') fy--;
+    else if (playerDirection === 'down') fy++;
+    else if (playerDirection === 'left') fx--;
+    else if (playerDirection === 'right') fx++;
+    const facing = getTile(fx, fy);
+    // Sign interaction: region-aware
+    if (standing === T.SIGN || facing === T.SIGN) {
+        startDialogue(getRegionSignText());
+        return;
+    }
+    // Boss interaction (UN Summit)
+    if (checkBossInteract()) return;
+    // Lobby NPC interactions (fixed positions)
+    if (gameState.currentMap === 'lobby') {
+        if ((fx === 3 && fy === 2) || (x === 3 && y === 2)) {
+            gameState.party.forEach(p => { p.hp = p.maxHp; });
+            sfx.heal();
+            startDialogue(['Your politicians are refreshed', 'and ready to lobby!']);
+        } else if ((fx === 11 && fy === 2) || (x === 11 && y === 2)) {
+            startDialogue(['Lobby PC', 'Party management', 'coming soon!']);
+        } else if ((fx === 7 && fy === 7) || (x === 7 && y === 7)) {
+            openShop();
+        }
+        return;
+    }
+    // Overworld NPC interactions: region-aware by tile type
+    const facingTile = facing;
+    const standingTile = standing;
+    const npcTile = [T.NPC1, T.NPC2, T.NPC3].includes(facingTile) ? facingTile
+                  : [T.NPC1, T.NPC2, T.NPC3].includes(standingTile) ? standingTile
+                  : null;
+    if (npcTile !== null) {
+        const lines = getRegionNPCDialogue(npcTile);
+        if (lines) startDialogue(lines);
+    }
+}
+// === LOBBY HQ INTERIOR ===
+// Note: enterRegionLobbyHQ() and exitRegionLobbyHQ() are defined in the regions module.
+// These stubs ensure the blackout system can call them before the module loads.
+function enterRegionLobbyHQStub() {
+    gameState.currentMap = 'lobby';
+    gameState.lastLobbyHQ = gameState.currentRegion || 'dc';
+    mapData = lobbyMap;
+    mapW = CONFIG.lobbyMapWidth;
+    mapH = CONFIG.lobbyMapHeight;
+    gameState.playerPos = { x: 7, y: 9 };
+    gameScreen = SCREENS.LOBBY_HQ;
+    startDialogue(['Welcome to the Lobby HQ!', 'Heal up and buy items.', 'EXIT door is bottom-center.']);
+}
+// === PLAYER SPRITE ===
+function drawPlayer(sx, sy) {
+    const bob = playerIdleBob ? -1 : 0;
+    const py = sy + bob;
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fillRect(sx + 4, sy + 28, 24, 4);
+    // Legs
+    ctx.fillStyle = '#1A1A2E';
+    ctx.fillRect(sx + 8, py + 20, 6, 8);
+    ctx.fillRect(sx + 18, py + 20, 6, 8);
+    // Body / suit
+    ctx.fillStyle = '#1A2A3C';
+    ctx.fillRect(sx + 6, py + 10, 20, 12);
+    // Shirt
+    ctx.fillStyle = '#ECF0F1';
+    ctx.fillRect(sx + 10, py + 11, 12, 8);
+    // Tie
+    ctx.fillStyle = COLORS.red;
+    ctx.fillRect(sx + 14, py + 11, 4, 10);
+    // Head
+    ctx.fillStyle = '#F5CBA7';
+    ctx.fillRect(sx + 9, py + 2, 14, 10);
+    // Hair
+    ctx.fillStyle = '#2C1A0A';
+    ctx.fillRect(sx + 9, py + 2, 14, 3);
+    // Eyes
+    ctx.fillStyle = '#1A1A2E';
+    ctx.fillRect(sx + 11, py + 5, 2, 2);
+    ctx.fillRect(sx + 19, py + 5, 2, 2);
+    // Briefcase
+    ctx.fillStyle = '#8B4513';
+    if (playerDirection === 'right') ctx.fillRect(sx + 26, py + 16, 6, 5);
+    else if (playerDirection === 'left') ctx.fillRect(sx, py + 16, 6, 5);
+    else ctx.fillRect(sx + 24, py + 16, 6, 5);
+    // Direction indicator (small colored pixel)
+    ctx.fillStyle = COLORS.teal;
+    if (playerDirection === 'up') ctx.fillRect(sx + 15, py, 2, 2);
+    else if (playerDirection === 'down') ctx.fillRect(sx + 15, py + 28, 2, 2);
+}
+// === UI: PAUSE MENU ===
+let pauseOpen = false;
+let pauseSel = 0;
+let pauseSubscreen = null;
+const PAUSE_OPTS = ['Party', 'Politi-Dex', 'Bag', 'Save Game', 'Return to Title'];
+let pauseSaveMsg = '';
+let pauseSaveMsgTimer = 0;
+
+function handlePauseConfirm() {
+    sfx.menuConfirm();
+    if (pauseSel === 0) { pauseSubscreen = 'party'; }
+    else if (pauseSel === 1) { pauseSubscreen = 'dex'; }
+    else if (pauseSel === 2) { pauseSubscreen = 'bag'; }
+    else if (pauseSel === 3) {
+        saveGame();
+        pauseSaveMsg = 'Game saved!';
+        pauseSaveMsgTimer = 2000;
+    } else if (pauseSel === 4) {
+        pauseOpen = false;
+        pauseSubscreen = null;
+        gameScreen = SCREENS.TITLE;
+    }
+}
+
+function drawPauseMenu() {
+    if (!pauseOpen) return;
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+
+    if (pauseSubscreen === 'party') {
+        drawPartyScreen();
+        return;
+    } else if (pauseSubscreen === 'dex') {
+        drawDexScreen();
+        return;
+    } else if (pauseSubscreen === 'bag') {
+        drawBagScreen();
+        return;
+    }
+
+    // Normal pause menu
+    const bw = 260, bh = 300, bx = (CONFIG.canvasWidth - bw) / 2, by = (CONFIG.canvasHeight - bh) / 2;
+    ctx.fillStyle = COLORS.darkBlue;
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeStyle = COLORS.gold; ctx.lineWidth = 3;
+    ctx.strokeRect(bx, by, bw, bh);
+    drawText('PAUSED', bx + 60, by + 12, 2, COLORS.gold);
+    PAUSE_OPTS.forEach((opt, i) => {
+        const oy = by + 50 + i * 44;
+        if (i === pauseSel) {
+            ctx.fillStyle = COLORS.gold;
+            ctx.fillRect(bx + 10, oy - 4, bw - 20, 30);
+            drawText(opt, bx + 20, oy, 2, COLORS.darkText);
+        } else {
+            drawText(opt, bx + 20, oy, 2, COLORS.white);
+        }
+    });
+    if (pauseSaveMsg) drawText(pauseSaveMsg, bx + 20, by + bh - 24, 1.5, COLORS.teal);
+}
+
+function drawPartyScreen() {
+    const bw = 600, bh = 400, bx = (CONFIG.canvasWidth - bw) / 2, by = (CONFIG.canvasHeight - bh) / 2;
+    ctx.fillStyle = COLORS.darkBlue; ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeStyle = COLORS.gold; ctx.lineWidth = 3; ctx.strokeRect(bx, by, bw, bh);
+    drawText('YOUR PARTY', bx + 180, by + 15, 2, COLORS.gold);
+    if (gameState.party.length === 0) {
+        drawText('No politicians yet!', bx + 140, by + 100, 2, COLORS.lightGray);
+    } else {
+        gameState.party.forEach((p, i) => {
+            const oy = by + 50 + i * 110;
+            const typeCol = TYPE_COLORS[p.type] || COLORS.white;
+            ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(bx + 15, oy, bw - 30, 100);
+            ctx.strokeStyle = typeCol; ctx.lineWidth = 1; ctx.strokeRect(bx + 15, oy, bw - 30, 100);
+            drawPoliticianPortrait(p.id, bx + 25, oy + 10, 50, 0);
+            drawText(p.name, bx + 85, oy + 10, 2, COLORS.white);
+            drawText('Lv' + p.level + '  ' + p.type, bx + 85, oy + 34, 1.5, typeCol);
+            const hpCol = p.hp > p.maxHp * 0.5 ? COLORS.hpGreen : p.hp > p.maxHp * 0.25 ? COLORS.hpYellow : COLORS.hpRed;
+            drawText('HP: ' + p.hp + '/' + p.maxHp, bx + 85, oy + 54, 1.5, hpCol);
+            const moveNames = p.moves.map(mid => { const m = getMoveById(mid); return m ? m.name : '???'; }).join(', ');
+            drawText(moveNames, bx + 85, oy + 74, 1, COLORS.lightGray);
+        });
+    }
+    drawText('Press Esc to go back', bx + 170, by + bh - 24, 1.5, COLORS.lightGray);
+}
+
+function drawDexScreen() {
+    const bw = 650, bh = 450, bx = (CONFIG.canvasWidth - bw) / 2, by = (CONFIG.canvasHeight - bh) / 2;
+    ctx.fillStyle = COLORS.darkBlue; ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeStyle = COLORS.gold; ctx.lineWidth = 3; ctx.strokeRect(bx, by, bw, bh);
+    const caught = Object.keys(gameState.pokedex).length;
+    drawText('POLITI-DEX  ' + caught + '/10', bx + 160, by + 15, 2, COLORS.gold);
+    POLITICIANS.forEach((p, i) => {
+        const col = i % 2;
+        const row = Math.floor(i / 2);
+        const ox = bx + 20 + col * 310;
+        const oy = by + 50 + row * 75;
+        const isCaught = gameState.pokedex[p.id];
+        ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(ox, oy, 295, 68);
+        if (isCaught) {
+            drawPoliticianPortrait(p.id, ox + 5, oy + 5, 40, 0);
+            drawText(p.name, ox + 52, oy + 5, 1.5, COLORS.white);
+            const typeCol = TYPE_COLORS[p.type] || COLORS.white;
+            drawText(p.type, ox + 52, oy + 25, 1, typeCol);
+            drawText(p.pokedexBio, ox + 52, oy + 42, 1, COLORS.lightGray);
+        } else {
+            ctx.fillStyle = '#333'; ctx.fillRect(ox + 5, oy + 5, 40, 40);
+            drawText('?', ox + 20, oy + 15, 2, '#555');
+            drawText('???', ox + 52, oy + 15, 1.5, '#555');
+        }
+    });
+    drawText('Press Esc to go back', bx + 190, by + bh - 24, 1.5, COLORS.lightGray);
+}
+
+function drawBagScreen() {
+    const bw = 500, bh = 350, bx = (CONFIG.canvasWidth - bw) / 2, by = (CONFIG.canvasHeight - bh) / 2;
+    ctx.fillStyle = COLORS.darkBlue; ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeStyle = COLORS.gold; ctx.lineWidth = 3; ctx.strokeRect(bx, by, bw, bh);
+    drawText('BAG', bx + 200, by + 15, 2, COLORS.gold);
+    drawText('Funds: $' + gameState.funds, bx + 20, by + 45, 1.5, COLORS.teal);
+    if (gameState.bag.length === 0) {
+        drawText('Empty!', bx + 190, by + 120, 2, COLORS.lightGray);
+    } else {
+        gameState.bag.forEach((b, i) => {
+            const item = ITEMS.find(it => it.id === b.id);
+            if (!item) return;
+            const oy = by + 75 + i * 55;
+            ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(bx + 15, oy, bw - 30, 45);
+            drawText(item.name, bx + 25, oy + 5, 2, COLORS.white);
+            drawText('x' + b.qty, bx + 350, oy + 5, 2, COLORS.gold);
+            drawText(item.description, bx + 25, oy + 28, 1, COLORS.lightGray);
+        });
+    }
+    drawText('Press Esc to go back', bx + 140, by + bh - 24, 1.5, COLORS.lightGray);
+}
+// === SCREEN: TITLE ===
+let titleSel = 0;
+let hasSave = false;
+let titleBlink = true;
+let titleBlinkTimer = 0;
+function drawTitle(now) {
+    ctx.fillStyle = COLORS.black;
+    ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+    // Starfield bg
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    for (let i = 0; i < 60; i++) {
+        const sx = ((i * 137 + 50) % 780) + 10;
+        const sy = ((i * 97 + 30) % 560) + 20;
+        ctx.fillRect(sx, sy, 1, 1);
+    }
+    // Logo
+    drawText('POLITI-MON', 90, 60, 5, COLORS.gold);
+    drawText('Gotta Lobby Em All', 155, 165, 2, COLORS.white);
+    // Briefcase icon
+    ctx.fillStyle = COLORS.brown; ctx.fillRect(362, 210, 76, 50);
+    ctx.fillStyle = COLORS.gold; ctx.fillRect(362, 210, 76, 8);
+    ctx.fillStyle = '#6A3800'; ctx.fillRect(390, 205, 20, 10);
+    // Buttons
+    hasSave = localStorage.getItem('politimon_save') !== null;
+    [['NEW GAME', false], ['CONTINUE', !hasSave]].forEach(([label, disabled], i) => {
+        const bx = 300, by = 330 + i * 70, bw = 200, bh = 44;
+        const sel = titleSel === i;
+        ctx.fillStyle = disabled ? '#555' : sel ? COLORS.gold : COLORS.white;
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.strokeStyle = COLORS.darkBlue; ctx.lineWidth = 2;
+        ctx.strokeRect(bx, by, bw, bh);
+        drawText(label, bx + 20, by + 12, 2, disabled ? '#888' : COLORS.darkText);
+        if (sel && !disabled && Math.floor(now / 500) % 2 === 0) {
+            drawText('>', bx - 18, by + 12, 2, COLORS.gold);
+        }
+    });
+    drawText('Arrow keys: move  Enter/Space: confirm', 170, 560, 1.5, COLORS.lightGray);
+    drawText('P or Esc: pause menu', 280, 578, 1.5, COLORS.lightGray);
+}
+// === SCREEN: INTRO ===
+let intro = {
+    stage: 0, charIdx: 0, lastCharTime: 0,
+    lines: ["The world's politicians are out of control.", "Only one lobbyist can unite them all.", "That lobbyist is..."],
+    nameInput: '', showName: false, goodluckTimer: 0, showGoodluck: false
+};
+function drawIntro(now) {
+    ctx.fillStyle = COLORS.black;
+    ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+    if (intro.showGoodluck) {
+        drawText('Good luck, ' + (intro.nameInput || 'Lobbyist') + '!', 180, 260, 2, COLORS.gold);
+        return;
+    }
+    // Draw completed lines
+    for (let i = 0; i < intro.stage && i < intro.lines.length; i++) {
+        drawText(intro.lines[i], 50, 120 + i * 70, 2, COLORS.white);
+    }
+    // Draw current line typewriter
+    if (intro.stage < intro.lines.length) {
+        const line = intro.lines[intro.stage];
+        drawText(line.substring(0, intro.charIdx), 50, 120 + intro.stage * 70, 2, COLORS.white);
+    }
+    if (intro.showName) {
+        drawText('Your name:', 50, 390, 2, COLORS.gold);
+        // Input box
+        ctx.fillStyle = COLORS.white; ctx.fillRect(50, 420, 300, 36);
+        ctx.strokeStyle = COLORS.darkBlue; ctx.lineWidth = 2;
+        ctx.strokeRect(50, 420, 300, 36);
+        drawText(intro.nameInput + (Math.floor(now / 500) % 2 === 0 ? '_' : ''), 60, 430, 2, COLORS.darkText);
+        // Presets
+        drawText('Presets:', 50, 480, 1.5, COLORS.lightGray);
+        ['Big Lobby', 'K Street Kid', 'The Fixer'].forEach((name, i) => {
+            const bx = 50 + i * 180, by = 500;
+            ctx.fillStyle = COLORS.darkBlue;
+            ctx.fillRect(bx, by, 160, 30);
+            ctx.strokeStyle = COLORS.gold; ctx.lineWidth = 1;
+            ctx.strokeRect(bx, by, 160, 30);
+            drawText(name, bx + 8, by + 8, 1.5, COLORS.gold);
+        });
+        drawText('Enter to confirm', 50, 548, 1.5, COLORS.lightGray);
+    } else if (intro.stage >= intro.lines.length) {
+        // do nothing, showName will be set
+    } else {
+        drawText('Press Enter/Space to continue', 50, 548, 1.5, COLORS.lightGray);
+    }
+}
+function updateIntro(now) {
+    if (intro.showGoodluck) {
+        if (now - intro.goodluckTimer > 1800) {
+            gameState.playerName = intro.nameInput || 'Lobbyist';
+            gameState.playerPos = { x: 15, y: 13 };
+    if (gameState.party.length === 0) {
+        const starter = createPoliticianInstance('biden', 5);
+        gameState.party.push(starter);
+        gameState.pokedex['biden'] = true;
+    }
+    
+            gameScreen = SCREENS.OVERWORLD;
+        }
+        return;
+    }
+    if (intro.stage < intro.lines.length) {
+        const line = intro.lines[intro.stage];
+        const msPerChar = 1000 / 30;
+        while (intro.charIdx < line.length && now - intro.lastCharTime >= msPerChar) {
+            intro.charIdx++;
+            intro.lastCharTime += msPerChar;
+        }
+    }
+}
+function advanceIntro() {
+    if (intro.showGoodluck) return;
+    if (intro.stage < intro.lines.length) {
+        if (intro.charIdx < intro.lines[intro.stage].length) {
+            intro.charIdx = intro.lines[intro.stage].length;
+        } else {
+            intro.stage++;
+            intro.charIdx = 0;
+            intro.lastCharTime = performance.now();
+            if (intro.stage >= intro.lines.length) intro.showName = true;
+        }
+    } else if (intro.showName) {
+        if (intro.nameInput.length === 0) intro.nameInput = 'Lobbyist';
+        intro.showGoodluck = true;
+        intro.goodluckTimer = performance.now();
+        sfx.menuConfirm();
+    }
+}
+// Click on preset names in intro
+function introPresetClick(x, y) {
+    if (!intro.showName) return;
+    const names = ['Big Lobby', 'K Street Kid', 'The Fixer'];
+    names.forEach((name, i) => {
+        const bx = 50 + i * 180, by = 500;
+        if (x >= bx && x <= bx + 160 && y >= by && y <= by + 30) {
+            intro.nameInput = name;
+            sfx.menuSelect();
+        }
+    });
+}
+// === HUD / MINIMAP (overworld only) ===
+function drawHUD() {
+    // Top-right: region label + funds
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(CONFIG.canvasWidth - 200, 0, 200, 36);
+    drawText('DC  $' + gameState.funds, CONFIG.canvasWidth - 190, 10, 1.5, COLORS.gold);
+    // Rally grounds indicator if player is on one
+    const tile = getTile(gameState.playerPos.x, gameState.playerPos.y);
+    if (tile === T.RALLY) {
+        ctx.fillStyle = 'rgba(0,80,0,0.6)';
+        ctx.fillRect(0, 0, 220, 28);
+        drawText('Rally Grounds!', 8, 7, 1.5, '#88FF88');
+    }
+    // Controls reminder (fades after 10s)
+    if (performance.now() < 10000) {
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(0, CONFIG.canvasHeight - 24, 420, 24);
+        drawText('Arrows:move  Enter:talk  P/Esc:pause', 8, CONFIG.canvasHeight - 17, 1.5, COLORS.lightGray);
+    }
+}
+// === TRANSITIONS ===
+function fadeToBlack(duration, callback) {
+    const startTime = performance.now();
+    function step(now) {
+        const elapsed = now - startTime;
+        const alpha = Math.min(elapsed / duration, 1);
+        ctx.fillStyle = 'rgba(0,0,0,' + alpha + ')';
+        ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+        if (alpha < 1) {
+            requestAnimationFrame(step);
+        } else {
+            callback();
+        }
+    }
+    requestAnimationFrame(step);
+}
+// === SAVE / LOAD ===
+function saveGame() {
+    gameState.saveTimestamp = new Date().toISOString();
+    localStorage.setItem('politimon_save', JSON.stringify(gameState));
+}
+function loadGame() {
+    const s = localStorage.getItem('politimon_save');
+    if (s) {
+        const loaded = JSON.parse(s);
+        gameState = loaded;
+        // Restore correct map (handles all regions)
+        if (gameState.currentMap === 'lobby') {
+            mapData = lobbyMap; mapW = CONFIG.lobbyMapWidth; mapH = CONFIG.lobbyMapHeight;
+            gameScreen = SCREENS.LOBBY_HQ;
+        } else {
+            const region = REGIONS[gameState.currentMap];
+            if (region) { mapData = region.map; mapW = region.w; mapH = region.h; }
+            else { mapData = dcMap; mapW = CONFIG.dcMapWidth; mapH = CONFIG.dcMapHeight; }
+            gameScreen = SCREENS.OVERWORLD;
+        }
+    }
+}
+
+// === BATTLE SYSTEM (Phase 2) ===
+// ============================================================
+// POLITI-MON BATTLE SYSTEM (Phase 2)
+// ============================================================
+// Integration instructions:
+// 1. Add these new SCREENS to your SCREENS object:
+//      BATTLE: 'battle', BATTLE_TRANSITION: 'battle_transition', BLACKOUT: 'blackout'
+// 2. Add 'let prevScreen = SCREENS.OVERWORLD;' after your gameScreen declaration
+// 3. Add a 'type' field to each ITEMS entry: coffee gets type:'heal', etc.
+// 4. Paste this entire file into your <script> tag BEFORE the main game loop
+// 5. Apply the integration patches described in battle-integration-readme.md
+// ============================================================
+
+// === HELPER: Type color map ===
+const TYPE_COLORS = {
+    Diplomacy: '#3498DB', Military: '#E74C3C', Intelligence: '#9B59B6',
+    Populism: '#E67E22', Environmental: '#2ECC71'
+};
+
+// === POLITICIAN INSTANCE FACTORY ===
+function createPoliticianInstance(pid, level) {
+    const d = getPoliticianData(pid);
+    const lv = level || Math.floor(Math.random() * (d.levelRange[1] - d.levelRange[0] + 1)) + d.levelRange[0];
+    const s = calcStats(d.baseStats, lv);
+    const knownMoves = d.learnset.filter(ls => ls.level <= lv).map(ls => ls.moveId).slice(-4);
+    return {
+        id: d.id, name: d.name, type: d.type, level: lv,
+        xp: 0, xpToNext: calcXPToNext(lv),
+        hp: s.hp, maxHp: s.hp, attack: s.attack, defense: s.defense, speed: s.speed,
+        baseStats: { ...d.baseStats }, moves: knownMoves, isBoss: d.isBoss
+    };
+}
+
+function calcStats(bs, lv) {
+    return {
+        hp: Math.floor(bs.hp + (bs.hp * 0.06 * lv)),
+        attack: Math.floor(bs.attack + (bs.attack * 0.1 * lv)),
+        defense: Math.floor(bs.defense + (bs.defense * 0.06 * lv)),
+        speed: Math.floor(bs.speed + (bs.speed * 0.08 * lv))
+    };
+}
+
+function calcXPToNext(lv) { return Math.floor(30 * Math.pow(lv, 1.3)); }
+
+function recalcStats(inst) {
+    const d = getPoliticianData(inst.id);
+    const s = calcStats(d.baseStats, inst.level);
+    const hpDiff = s.hp - inst.maxHp;
+    inst.maxHp = s.hp;
+    inst.hp = Math.min(inst.hp + hpDiff, inst.maxHp);
+    inst.attack = s.attack; inst.defense = s.defense; inst.speed = s.speed;
+}
+
+function getMoveById(id) { return MOVES.find(m => m.id === id); }
+function getPoliticianData(id) { return POLITICIANS.find(p => p.id === id); }
+
+function getTypeMultiplier(moveType, defType) {
+    const c = TYPE_CHART[moveType];
+    if (!c) return 1;
+    if (c.strongAgainst.includes(defType)) return 1.5;
+    if (c.weakAgainst.includes(defType)) return 0.75;
+    return 1;
+}
+
+// === ADDITIONAL SFX ===
+function playTone(freq, dur, type, vol) {
+    if (!audioCtx) initAudio();
+    const now = audioCtx.currentTime;
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.connect(g); g.connect(audioCtx.destination);
+    o.frequency.value = freq; o.type = type || 'square';
+    g.gain.setValueAtTime(vol || 0.1, now);
+    g.gain.exponentialRampToValueAtTime(0.01, now + dur);
+    o.start(now); o.stop(now + dur);
+}
+
+function playNoise(dur, vol) {
+    if (!audioCtx) initAudio();
+    const now = audioCtx.currentTime;
+    const buf = audioCtx.createBufferSource();
+    const buffer = audioCtx.createBuffer(1, audioCtx.sampleRate * dur, audioCtx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+    buf.buffer = buffer;
+    const g = audioCtx.createGain(); buf.connect(g); g.connect(audioCtx.destination);
+    g.gain.setValueAtTime(vol || 0.15, now);
+    g.gain.exponentialRampToValueAtTime(0.01, now + dur);
+    buf.start(now);
+}
+
+// Add these to your sfx object:
+sfx.attackHit = function() { playNoise(0.1, 0.15); };
+sfx.superEffective = function() { playTone(200, 0.15, 'square', 0.15); playNoise(0.12, 0.12); };
+sfx.faint = function() {
+    if (!audioCtx) initAudio();
+    const now = audioCtx.currentTime;
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.connect(g); g.connect(audioCtx.destination);
+    o.frequency.setValueAtTime(500, now);
+    o.frequency.linearRampToValueAtTime(100, now + 0.5);
+    o.type = 'square';
+    g.gain.setValueAtTime(0.1, now);
+    g.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+    o.start(now); o.stop(now + 0.5);
+};
+sfx.heal = function() { [262, 330, 392].forEach((f, i) => setTimeout(() => playTone(f, 0.1, 'square', 0.08), i * 100)); };
+sfx.catchSuccess = function() { [262, 330, 392, 523].forEach((f, i) => setTimeout(() => playTone(f, i === 3 ? 0.3 : 0.15, 'square', 0.1), i * 150)); };
+sfx.catchFail = function() { [200, 200].forEach((f, i) => setTimeout(() => playTone(f, 0.2, 'sawtooth', 0.08), i * 200)); };
+sfx.levelUp = function() { [262, 294, 330, 349, 392].forEach((f, i) => setTimeout(() => playTone(f, 0.08, 'square', 0.1), i * 80)); };
+sfx.encounter = function() { [600, 600, 600].forEach((f, i) => setTimeout(() => playTone(f, 0.05, 'square', 0.12), i * 70)); };
+
+// ============================================================
+// BATTLE STATE
+// ============================================================
+const battle = {
+    active: false,
+    wild: null,           // enemy politician instance
+    wildData: null,       // POLITICIANS data reference
+    playerPol: null,      // reference into gameState.party
+    activeIndex: 0,
+    phase: 'intro',       // intro|menu|fight_select|item_select|switch_select|animating|debate|message|end
+    messages: [],
+    msgIndex: 0,
+    msgCharIdx: 0,
+    msgLastTime: 0,
+    messageCallback: null,
+    // Animation
+    anim: { type: null, startTime: 0, duration: 0, callback: null },
+    // Stat modifiers (reset each battle), range -6 to +6
+    playerMods: { attack: 0, defense: 0, speed: 0, accuracy: 0, evasion: 0 },
+    enemyMods:  { attack: 0, defense: 0, speed: 0, accuracy: 0, evasion: 0 },
+    // Status flags
+    playerConfused: false, enemyConfused: false,
+    playerShield: false, playerPriority: false,
+    playerDisabledMove: null, enemyDisabledMove: null,
+    // Debate minigame
+    debateActive: false, debateTimer: 0, debateMaxTime: 0,
+    debateArgs: [], debateCorrect: 0, debateResult: null,
+    // Menu cursors
+    menuSel: 0, moveSel: 0, itemSel: 0, switchSel: 0,
+    canRun: true, canDebate: false,
+    // Visual animation state
+    screenShake: 0,
+    playerFaintAnim: 0, enemyFaintAnim: 0,
+    playerHpDisplay: 0, enemyHpDisplay: 0
+};
+
+const BATTLE_MENU = ['Fight', 'Debate', 'Item', 'Switch', 'Run'];
+
+// ============================================================
+// RANDOM ENCOUNTER
+// ============================================================
+function checkRandomEncounter() {
+    if (gameState.party.length === 0) return;
+    if (Math.random() < CONFIG.encounterRate) {
+        const regionPols = POLITICIANS.filter(p => p.region === gameState.currentRegion && !p.isBoss);
+        if (regionPols.length === 0) return;
+        const polData = regionPols[Math.floor(Math.random() * regionPols.length)];
+        startBattleTransition(polData);
+    }
+}
+
+// ============================================================
+// BATTLE TRANSITION (flash effect)
+// ============================================================
+let battleTransition = { active: false, startTime: 0, polData: null };
+
+function startBattleTransition(polData) {
+    sfx.encounter();
+    battleTransition.active = true;
+    battleTransition.startTime = performance.now();
+    battleTransition.polData = polData;
+    prevScreen = gameScreen;
+    gameScreen = SCREENS.BATTLE_TRANSITION;
+}
+
+function updateBattleTransition(now) {
+    if (now - battleTransition.startTime > 800) {
+        battleTransition.active = false;
+        initBattle(battleTransition.polData);
+    }
+}
+
+function drawBattleTransition(now) {
+    const elapsed = now - battleTransition.startTime;
+    if (elapsed < 600) {
+        const flashNum = Math.floor(elapsed / 100);
+        if (flashNum % 2 === 0) {
+            ctx.fillStyle = 'rgba(255,255,255,0.9)';
+            ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+        }
+    } else {
+        const alpha = Math.min((elapsed - 600) / 200, 1);
+        ctx.fillStyle = 'rgba(0,0,0,' + alpha + ')';
+        ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+    }
+}
+
+// ============================================================
+// INIT BATTLE
+// ============================================================
+function initBattle(polData) {
+    const level = Math.floor(Math.random() * (polData.levelRange[1] - polData.levelRange[0] + 1)) + polData.levelRange[0];
+    const wildInst = createPoliticianInstance(polData.id, level);
+
+    battle.active = true;
+    battle.wild = wildInst;
+    battle.wildData = polData;
+    battle.activeIndex = gameState.party.findIndex(p => p.hp > 0);
+    battle.playerPol = gameState.party[battle.activeIndex];
+    battle.phase = 'intro';
+    battle.messages = ['A wild ' + wildInst.name + ' appeared!'];
+    battle.msgIndex = 0; battle.msgCharIdx = 0; battle.msgLastTime = performance.now();
+    battle.messageCallback = function() { checkPostTurn(); };
+
+    // Reset all battle state
+    battle.playerMods = { attack: 0, defense: 0, speed: 0, accuracy: 0, evasion: 0 };
+    battle.enemyMods = { attack: 0, defense: 0, speed: 0, accuracy: 0, evasion: 0 };
+    battle.playerConfused = false; battle.enemyConfused = false;
+    battle.playerShield = false; battle.playerPriority = false;
+    battle.playerDisabledMove = null; battle.enemyDisabledMove = null;
+    battle.menuSel = 0; battle.moveSel = 0; battle.itemSel = 0; battle.switchSel = 0;
+    battle.canRun = !polData.isBoss;
+    battle.canDebate = false;
+    battle.debateActive = false; battle.debateResult = null;
+    battle.screenShake = 0;
+    battle.playerFaintAnim = 0; battle.enemyFaintAnim = 0;
+    battle.playerHpDisplay = battle.playerPol.hp;
+    battle.enemyHpDisplay = wildInst.hp;
+    battle.anim = { type: null };
+    battle.turnIndicator = null;
+
+    gameScreen = SCREENS.BATTLE;
+}
+
+// ============================================================
+// DAMAGE CALCULATION
+// ============================================================
+function getModMultiplier(stage) {
+    const s = Math.max(-3, Math.min(3, stage));
+    return s >= 0 ? (2 + s) / 2 : 2 / (2 - s);
+}
+
+function calcDamage(attacker, defender, move, atkMods, defMods) {
+    if (move.power === 0) return 0;
+    const atk = attacker.attack * getModMultiplier(atkMods.attack);
+    const def = defender.defense * getModMultiplier(defMods.defense);
+    const typeMul = getTypeMultiplier(move.type, defender.type);
+    const baseDmg = (move.power * (atk / def)) * (0.7 + attacker.level * 0.06);
+    const variance = 0.9 + Math.random() * 0.2;
+    return Math.max(2, Math.floor(baseDmg * typeMul * variance * 0.55));
+}
+
+function checkAccuracy(move, atkMods, defMods) {
+    const accMod = getModMultiplier(atkMods.accuracy);
+    const evaMod = getModMultiplier(defMods.evasion);
+    return Math.random() * 100 < move.accuracy * (accMod / evaMod);
+}
+
+// ============================================================
+// EXECUTE A SINGLE MOVE
+// ============================================================
+function executeMoveAction(attacker, defender, move, atkMods, defMods, isPlayer) {
+    const msgs = [];
+    const who = attacker.name;
+    msgs.push(who + ' used ' + move.name + '!');
+
+    // Confusion check
+    const confused = isPlayer ? battle.playerConfused : battle.enemyConfused;
+    if (confused) {
+        msgs.push(who + ' is confused!');
+        if (Math.random() < 0.2) {
+            const selfDmg = Math.max(1, Math.floor(attacker.attack * 0.2));
+            attacker.hp = Math.max(0, attacker.hp - selfDmg);
+            msgs.push(who + ' hurt itself in confusion!');
+            return { msgs, hit: false, superEffective: false };
+        }
+        if (Math.random() < 0.5) {
+            if (isPlayer) battle.playerConfused = false; else battle.enemyConfused = false;
+            msgs.push(who + ' snapped out of confusion!');
+        }
+    }
+
+    // Accuracy check
+    if (!checkAccuracy(move, atkMods, defMods)) {
+        msgs.push(who + "'s attack missed!");
+        return { msgs, hit: false, superEffective: false };
+    }
+
+    let superEffective = false;
+
+    // Shield check (only blocks attacks aimed at player)
+    if (!isPlayer && battle.playerShield && move.power > 0) {
+        battle.playerShield = false;
+        msgs.push('The Scandal Shield blocked the attack!');
+        return { msgs, hit: false, superEffective: false };
+    }
+
+    // Damage
+    if (move.power > 0) {
+        const dmg = calcDamage(attacker, defender, move, atkMods, defMods);
+        defender.hp = Math.max(0, defender.hp - dmg);
+        const typeMul = getTypeMultiplier(move.type, defender.type);
+        if (typeMul > 1) { superEffective = true; msgs.push("It's super effective!"); }
+        if (typeMul < 1) { msgs.push("It's not very effective..."); }
+    }
+
+    // Apply move effect
+    if (move.effect) {
+        applyEffect(move, attacker, defender, isPlayer, msgs);
+    }
+
+    return { msgs, hit: true, superEffective };
+}
+
+function applyEffect(move, attacker, defender, isPlayer, msgs) {
+    const targetMods = isPlayer ? battle.enemyMods : battle.playerMods;
+    const selfMods = isPlayer ? battle.playerMods : battle.enemyMods;
+    const defName = defender.name;
+    const atkName = attacker.name;
+
+    switch (move.effect) {
+        case 'heal':
+            attacker.hp = Math.min(attacker.maxHp, attacker.hp + move.effectValue);
+            msgs.push(atkName + ' healed ' + move.effectValue + ' HP!');
+            break;
+        case 'lower_speed':
+            targetMods.speed -= move.effectValue;
+            msgs.push(defName + "'s speed fell!"); break;
+        case 'lower_accuracy':
+            targetMods.accuracy -= move.effectValue;
+            msgs.push(defName + "'s accuracy fell!"); break;
+        case 'lower_defense':
+            targetMods.defense -= move.effectValue;
+            msgs.push(defName + "'s defense fell!"); break;
+        case 'lower_atk_def':
+            targetMods.attack -= move.effectValue;
+            targetMods.defense -= move.effectValue;
+            msgs.push(defName + "'s attack and defense fell!"); break;
+        case 'lower_all_stats':
+            ['attack', 'defense', 'speed'].forEach(s => targetMods[s] -= move.effectValue);
+            msgs.push(defName + "'s stats all fell!"); break;
+        case 'raise_attack':
+            selfMods.attack += move.effectValue;
+            msgs.push(atkName + "'s attack rose" + (move.effectValue >= 2 ? ' sharply!' : '!')); break;
+        case 'raise_defense':
+            selfMods.defense += move.effectValue;
+            msgs.push(atkName + "'s defense rose" + (move.effectValue >= 2 ? ' sharply!' : '!')); break;
+        case 'raise_evasion':
+            selfMods.evasion += move.effectValue;
+            msgs.push(atkName + "'s evasion rose!"); break;
+        case 'confuse':
+            if (Math.random() < 0.3) {
+                if (isPlayer) battle.enemyConfused = true; else battle.playerConfused = true;
+                msgs.push(defName + ' became confused!');
+            } break;
+        case 'recoil':
+            attacker.hp = Math.max(0, attacker.hp - move.effectValue);
+            msgs.push(atkName + ' took ' + move.effectValue + ' recoil!'); break;
+        case 'disable_move':
+            if (isPlayer) {
+                const moves = battle.wild.moves.filter(m => m !== battle.enemyDisabledMove);
+                if (moves.length > 0) {
+                    battle.enemyDisabledMove = moves[Math.floor(Math.random() * moves.length)];
+                    msgs.push('A move was disabled!');
+                }
+            } else {
+                const moves = battle.playerPol.moves.filter(m => m !== battle.playerDisabledMove);
+                if (moves.length > 0) {
+                    battle.playerDisabledMove = moves[Math.floor(Math.random() * moves.length)];
+                    msgs.push('A move was disabled!');
+                }
+            } break;
+    }
+}
+
+// ============================================================
+// ENEMY AI
+// ============================================================
+function chooseEnemyMove() {
+    const avail = battle.wild.moves
+        .filter(mid => mid !== battle.enemyDisabledMove)
+        .map(mid => getMoveById(mid))
+        .filter(Boolean);
+    if (avail.length === 0) return getMoveById(battle.wild.moves[0]);
+
+    const weighted = avail.map(m => {
+        let w = 1;
+        const tm = getTypeMultiplier(m.type, battle.playerPol.type);
+        if (tm > 1) w = 3;
+        if (tm < 1) w = 0.3;
+        if (m.effect === 'heal' && battle.wild.hp < battle.wild.maxHp * 0.4) w = 2.5;
+        if (m.power === 0 && m.effect && m.effect.startsWith('raise') && battle.wild.hp > battle.wild.maxHp * 0.6) w = 0.7;
+        if (m.power === 0 && m.effect && m.effect.startsWith('lower')) w = 0.5;
+        return { move: m, w };
+    });
+    const total = weighted.reduce((s, x) => s + x.w, 0);
+    let r = Math.random() * total;
+    for (const x of weighted) { r -= x.w; if (r <= 0) return x.move; }
+    return weighted[0].move;
+}
+
+// ============================================================
+// TURN RESOLUTION
+// ============================================================
+function resolveTurn(playerAction) {
+    battle.phase = 'animating';
+
+    // === RUN ===
+    if (playerAction.type === 'run') {
+        if (Math.random() < 0.75) {
+            showBattleMessages(['Got away safely!'], function() { endBattle(false); });
+        } else {
+            showBattleMessages(["Couldn't escape!"], function() {
+                const eMove = chooseEnemyMove();
+                const eResult = executeMoveAction(battle.wild, battle.playerPol, eMove, battle.enemyMods, battle.playerMods, false);
+                doAttackAnim(false, eResult.superEffective, function() {
+                    showBattleMessages(eResult.msgs, function() { checkFaintsAndContinue(); });
+                });
+            });
+        }
+        return;
+    }
+
+    // === ITEM ===
+    if (playerAction.type === 'item') {
+        const item = ITEMS.find(i => i.id === playerAction.itemId);
+        const bagItem = gameState.bag.find(b => b.id === playerAction.itemId);
+        bagItem.qty--;
+        if (bagItem.qty <= 0) gameState.bag = gameState.bag.filter(b => b.qty > 0);
+
+        const msgs = [];
+        if (item.type === 'heal') {
+            battle.playerPol.hp = Math.min(battle.playerPol.maxHp, battle.playerPol.hp + item.healAmount);
+            msgs.push('Used ' + item.name + '! Healed ' + item.healAmount + ' HP.');
+            sfx.heal();
+        } else if (item.type === 'shield') {
+            battle.playerShield = true;
+            msgs.push('Scandal Shield activated!');
+        } else if (item.type === 'priority') {
+            battle.playerPriority = true;
+            msgs.push('Filibuster Scroll used!');
+        }
+
+        showBattleMessages(msgs, function() {
+            doEnemyTurn(function() { checkFaintsAndContinue(); });
+        });
+        return;
+    }
+
+    // === SWITCH ===
+    if (playerAction.type === 'switch') {
+        battle.activeIndex = playerAction.index;
+        battle.playerPol = gameState.party[battle.activeIndex];
+        battle.playerMods = { attack: 0, defense: 0, speed: 0, accuracy: 0, evasion: 0 };
+        battle.playerConfused = false; battle.playerShield = false; battle.playerDisabledMove = null;
+        battle.playerHpDisplay = battle.playerPol.hp;
+
+        showBattleMessages(['Go, ' + battle.playerPol.name + '!'], function() {
+            doEnemyTurn(function() { checkFaintsAndContinue(); });
+        });
+        return;
+    }
+
+    // === FIGHT ===
+    if (playerAction.type === 'fight') {
+        const pMove = getMoveById(playerAction.moveId);
+        const eMove = chooseEnemyMove();
+
+        // Speed comparison for turn order
+        const pSpd = battle.playerPol.speed * getModMultiplier(battle.playerMods.speed);
+        const eSpd = battle.wild.speed * getModMultiplier(battle.enemyMods.speed);
+        let playerFirst = pSpd >= eSpd;
+        if (battle.playerPriority) { playerFirst = true; battle.playerPriority = false; }
+
+        if (playerFirst) {
+            doPlayerAttack(pMove, function() {
+                if (battle.wild.hp <= 0) { handleEnemyFaint(); return; }
+                if (battle.playerPol.hp <= 0) { handlePlayerFaint(); return; }
+                doEnemyAttack(eMove, function() { checkFaintsAndContinue(); });
+            });
+        } else {
+            doEnemyAttack(eMove, function() {
+                if (battle.playerPol.hp <= 0) { handlePlayerFaint(); return; }
+                if (battle.wild.hp <= 0) { handleEnemyFaint(); return; }
+                doPlayerAttack(pMove, function() { checkFaintsAndContinue(); });
+            });
+        }
+    }
+}
+
+function doPlayerAttack(move, callback) {
+    battle.turnIndicator = { text: 'YOUR TURN', color: '#3498DB', startTime: performance.now() };
+    const result = executeMoveAction(battle.playerPol, battle.wild, move, battle.playerMods, battle.enemyMods, true);
+    doAttackAnim(true, result.superEffective, function() {
+        showBattleMessages(result.msgs, callback);
+    });
+}
+
+function doEnemyAttack(move, callback) {
+    battle.turnIndicator = { text: 'ENEMY TURN', color: '#E74C3C', startTime: performance.now() };
+    const result = executeMoveAction(battle.wild, battle.playerPol, move, battle.enemyMods, battle.playerMods, false);
+    doAttackAnim(false, result.superEffective, function() {
+        showBattleMessages(result.msgs, callback);
+    });
+}
+
+function doEnemyTurn(callback) {
+    const eMove = chooseEnemyMove();
+    doEnemyAttack(eMove, callback);
+}
+
+function doAttackAnim(isPlayer, superEffective, callback) {
+    battle.anim = {
+        type: 'attack', isPlayer: isPlayer,
+        startTime: performance.now(),
+        duration: superEffective ? 500 : 350,
+        callback: callback
+    };
+    if (superEffective) { battle.screenShake = performance.now(); sfx.superEffective(); }
+    else { sfx.attackHit(); }
+}
+
+function checkFaintsAndContinue() {
+    if (battle.wild.hp <= 0) { handleEnemyFaint(); return; }
+    if (battle.playerPol.hp <= 0) { handlePlayerFaint(); return; }
+    checkPostTurn();
+}
+
+// ============================================================
+// FAINT HANDLING
+// ============================================================
+function handlePlayerFaint() {
+    sfx.faint();
+    battle.playerFaintAnim = performance.now();
+    showBattleMessages([battle.playerPol.name + ' fainted!'], function() {
+        battle.playerFaintAnim = 0;
+        const nextIdx = gameState.party.findIndex((p, i) => i !== battle.activeIndex && p.hp > 0);
+        if (nextIdx === -1) {
+            showBattleMessages(['All your politicians fainted!'], function() {
+                endBattle(false);
+                startBlackout();
+            });
+        } else {
+            // Force switch
+            battle.phase = 'switch_select';
+            battle.switchSel = 0;
+        }
+    });
+}
+
+function handleEnemyFaint() {
+    sfx.faint();
+    battle.enemyFaintAnim = performance.now();
+    const xp = Math.floor(CONFIG.xpBase * battle.wild.level * 0.5);
+    const funds = Math.floor(10 + battle.wild.level * 5);
+    gameState.funds += funds;
+
+    showBattleMessages([battle.wild.name + ' fainted!', 'Gained ' + xp + ' XP and $' + funds + '!'], function() {
+        battle.enemyFaintAnim = 0;
+        awardXP(xp, function() { endBattle(false); });
+    });
+}
+
+function awardXP(xp, callback) {
+    battle.playerPol.xp += xp;
+    if (battle.playerPol.xp >= battle.playerPol.xpToNext) {
+        battle.playerPol.xp -= battle.playerPol.xpToNext;
+        battle.playerPol.level++;
+        recalcStats(battle.playerPol);
+        battle.playerPol.xpToNext = calcXPToNext(battle.playerPol.level);
+        sfx.levelUp();
+
+        // Check for new move
+        const data = getPoliticianData(battle.playerPol.id);
+        const newMoveEntry = data.learnset.find(ls => ls.level === battle.playerPol.level);
+        let learnMsg = '';
+        if (newMoveEntry && !battle.playerPol.moves.includes(newMoveEntry.moveId)) {
+            if (battle.playerPol.moves.length < 4) {
+                battle.playerPol.moves.push(newMoveEntry.moveId);
+                learnMsg = 'Learned ' + getMoveById(newMoveEntry.moveId).name + '!';
+            } else {
+                const oldMove = getMoveById(battle.playerPol.moves[0]).name;
+                battle.playerPol.moves.shift();
+                battle.playerPol.moves.push(newMoveEntry.moveId);
+                learnMsg = 'Forgot ' + oldMove + ', learned ' + getMoveById(newMoveEntry.moveId).name + '!';
+            }
+        }
+        const msgs = [battle.playerPol.name + ' grew to Lv' + battle.playerPol.level + '!'];
+        if (learnMsg) msgs.push(learnMsg);
+        showBattleMessages(msgs, callback);
+    } else {
+        callback();
+    }
+}
+
+function checkPostTurn() {
+    const threshold = battle.wildData.isBoss ? CONFIG.bossDebateThreshold : CONFIG.wildDebateThreshold;
+    battle.canDebate = battle.wild.hp > 0 && (battle.wild.hp / battle.wild.maxHp) <= threshold;
+    battle.phase = 'menu';
+    battle.menuSel = 0;
+}
+
+function endBattle(caught) {
+    if (caught) {
+        const inst = battle.wild;
+        if (gameState.party.length < 3) gameState.party.push(inst);
+        else gameState.pc.push(inst);
+        gameState.pokedex[inst.id] = true;
+        checkVictory();
+    }
+    battle.active = false;
+    if (gameScreen !== SCREENS.VICTORY) gameScreen = prevScreen;
+}
+
+// ============================================================
+// BLACKOUT
+// ============================================================
+let blackout = { active: false, startTime: 0 };
+
+function startBlackout() {
+    blackout.active = true;
+    blackout.startTime = performance.now();
+    gameScreen = SCREENS.BLACKOUT;
+}
+
+function updateBlackout(now) {
+    if (now - blackout.startTime > 4000) {
+        blackout.active = false;
+        gameState.party.forEach(p => { p.hp = p.maxHp; });
+        enterRegionLobbyHQ();
+    }
+}
+
+function drawBlackout(now) {
+    ctx.fillStyle = COLORS.black;
+    ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+    const elapsed = now - blackout.startTime;
+    if (elapsed < 2000) {
+        drawText('Your party was defeated...', 160, 260, 2, COLORS.white);
+    } else {
+        drawText('You scrambled back to', 180, 240, 2, COLORS.white);
+        drawText('the nearest Lobby HQ.', 175, 280, 2, COLORS.white);
+    }
+}
+
+// ============================================================
+// DEBATE MINIGAME
+// ============================================================
+function startDebate() {
+    battle.debateActive = true;
+    battle.debateResult = null;
+    battle.debateArgs = battle.wildData.catchArguments;
+    battle.debateCorrect = battle.wildData.correctArgument;
+    const hpPct = battle.wild.hp / battle.wild.maxHp;
+    const threshold = battle.wildData.isBoss ? CONFIG.bossDebateThreshold : CONFIG.wildDebateThreshold;
+    const pctBelow = Math.max(0, threshold - hpPct);
+    battle.debateMaxTime = CONFIG.debateBaseTime + (pctBelow / 0.05) * CONFIG.debateHPBonusPerPct;
+    battle.debateTimer = battle.debateMaxTime;
+    battle.phase = 'debate';
+}
+
+function updateDebate(dt) {
+    if (!battle.debateActive || battle.debateResult) return;
+    battle.debateTimer -= dt;
+    if (battle.debateTimer <= 0) { battle.debateResult = 'fail'; sfx.catchFail(); }
+}
+
+function handleDebateClick(cx, cy) {
+    if (battle.debateResult) return;
+    for (let i = 0; i < 3; i++) {
+        const bx = 100, by = 250 + i * 70, bw = 600, bh = 55;
+        if (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh) {
+            battle.debateResult = (i === battle.debateCorrect) ? 'success' : 'fail';
+            if (battle.debateResult === 'success') sfx.catchSuccess(); else sfx.catchFail();
+            return;
+        }
+    }
+}
+
+function drawDebate(now) {
+    ctx.fillStyle = 'rgba(0,0,0,0.85)';
+    ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+    drawText('DEBATE TIME!', 260, 30, 3, COLORS.gold);
+    drawText('Choose your argument:', 220, 80, 2, COLORS.white);
+
+    // Timer bar
+    const pct = Math.max(0, battle.debateTimer / battle.debateMaxTime);
+    ctx.fillStyle = '#333'; ctx.fillRect(100, 120, 600, 16);
+    ctx.fillStyle = pct > 0.3 ? COLORS.teal : COLORS.red;
+    ctx.fillRect(100, 120, 600 * pct, 16);
+    ctx.strokeStyle = COLORS.white; ctx.lineWidth = 1; ctx.strokeRect(100, 120, 600, 16);
+
+    // Argument buttons
+    for (let i = 0; i < 3; i++) {
+        const by = 250 + i * 70;
+        let bg = COLORS.darkBlue;
+        if (battle.debateResult === 'success' && i === battle.debateCorrect) bg = COLORS.green;
+        else if (battle.debateResult === 'fail' && i === battle.debateCorrect) bg = COLORS.green;
+        else if (battle.debateResult === 'fail') bg = '#5A2020';
+        ctx.fillStyle = bg; ctx.fillRect(100, by, 600, 55);
+        ctx.strokeStyle = COLORS.gold; ctx.lineWidth = 2; ctx.strokeRect(100, by, 600, 55);
+        drawText((i + 1) + '. ' + battle.debateArgs[i], 112, by + 18, 1.5, COLORS.white);
+    }
+
+    if (battle.debateResult === 'success') {
+        drawText('You lobbied ' + battle.wild.name + '!', 180, 500, 2, COLORS.gold);
+        drawText('Click to continue', 270, 540, 1.5, COLORS.lightGray);
+    } else if (battle.debateResult === 'fail') {
+        drawText('Your argument fell flat!', 210, 500, 2, COLORS.red);
+        drawText('Click to continue', 270, 540, 1.5, COLORS.lightGray);
+    } else {
+        drawText(Math.ceil(battle.debateTimer / 1000) + 's', 380, 160, 3, pct > 0.3 ? COLORS.white : COLORS.red);
+    }
+}
+
+function finishDebate() {
+    battle.debateActive = false;
+    if (battle.debateResult === 'success') {
+        const xp = Math.floor(CONFIG.xpBase * battle.wild.level * 0.7);
+        const funds = Math.floor(15 + battle.wild.level * 8);
+        gameState.funds += funds;
+        showBattleMessages([battle.wild.name + ' was lobbied!', 'Gained ' + xp + ' XP and $' + funds + '!'], function() {
+            awardXP(xp, function() { endBattle(true); });
+        });
+    } else {
+        showBattleMessages([battle.wild.name + ' resisted!'], function() {
+            doEnemyTurn(function() {
+                if (battle.playerPol.hp <= 0) { handlePlayerFaint(); }
+                else { checkPostTurn(); }
+            });
+        });
+    }
+}
+
+// ============================================================
+// BATTLE MESSAGE QUEUE
+// ============================================================
+function showBattleMessages(msgs, callback) {
+    battle.phase = 'message';
+    battle.messages = msgs;
+    battle.msgIndex = 0;
+    battle.msgCharIdx = 0;
+    battle.msgLastTime = performance.now();
+    battle.messageCallback = callback;
+}
+
+function advanceBattleMessage() {
+    const line = battle.messages[battle.msgIndex];
+    if (battle.msgCharIdx < line.length) {
+        battle.msgCharIdx = line.length;
+    } else if (battle.msgIndex < battle.messages.length - 1) {
+        battle.msgIndex++;
+        battle.msgCharIdx = 0;
+        battle.msgLastTime = performance.now();
+    } else {
+        if (battle.messageCallback) battle.messageCallback();
+    }
+}
+
+function updateBattleMessage(now) {
+    if (battle.phase !== 'message' && battle.phase !== 'intro') return;
+    const line = battle.messages[battle.msgIndex];
+    if (!line) return;
+    const ms = 1000 / 40;
+    while (battle.msgCharIdx < line.length && now - battle.msgLastTime >= ms) {
+        battle.msgCharIdx++; battle.msgLastTime += ms;
+    }
+}
+
+// ============================================================
+// DRAW: POLITICIAN PORTRAIT
+// ============================================================
+function drawPoliticianPortrait(pid, x, y, size, faintAnim) {
+    const data = getPoliticianData(pid);
+    const typeCol = TYPE_COLORS[data.type] || COLORS.white;
+
+    let alpha = 1;
+    if (pid === 'elizabeth') alpha = 0.7 + Math.sin(performance.now() / 500) * 0.15;
+
+    let yOff = 0;
+    if (faintAnim > 0) {
+        const elapsed = performance.now() - faintAnim;
+        yOff = Math.min(elapsed / 400, 1) * size;
+        alpha *= (1 - Math.min(elapsed / 400, 1));
+    }
+
+    ctx.globalAlpha = alpha;
+    // BG
+    ctx.fillStyle = typeCol;
+    ctx.fillRect(x, y + yOff, size, size - yOff);
+    // Face
+    const fX = x + size * 0.15, fY = y + yOff + size * 0.15, fW = size * 0.7, fH = size * 0.6;
+    ctx.fillStyle = '#F5CBA7';
+    ctx.fillRect(fX, fY, fW, fH);
+    // Eyes
+    ctx.fillStyle = '#1A1A2E';
+    ctx.fillRect(fX + fW * 0.2, fY + fH * 0.35, size * 0.08, size * 0.08);
+    ctx.fillRect(fX + fW * 0.6, fY + fH * 0.35, size * 0.08, size * 0.08);
+    // Mouth
+    ctx.fillRect(fX + fW * 0.3, fY + fH * 0.7, fW * 0.4, size * 0.04);
+
+    // Distinguishing features
+    const hY = y + yOff + size * 0.05;
+    switch (pid) {
+        case 'biden':
+            ctx.fillStyle = '#C0C0C0'; ctx.fillRect(fX, hY, fW, size * 0.12); // gray hair
+            ctx.fillStyle = '#888'; ctx.fillRect(fX + fW * 0.3, fY + fH * 0.1, fW * 0.4, size * 0.06); // aviators
+            break;
+        case 'trump':
+            ctx.fillStyle = '#FFD700'; ctx.fillRect(fX - size * 0.05, hY, fW + size * 0.1, size * 0.18); // golden hair
+            ctx.fillStyle = '#FF4444'; ctx.fillRect(fX, fY + fH + size * 0.02, fW, size * 0.12); // red tie
+            break;
+        case 'macron':
+            ctx.fillStyle = '#3A2A1A'; ctx.fillRect(fX, hY, fW, size * 0.12); break;
+        case 'johnson':
+            ctx.fillStyle = '#FFE066'; ctx.fillRect(fX - size * 0.08, hY - size * 0.05, fW + size * 0.16, size * 0.2);
+            for (let i = 0; i < 5; i++) ctx.fillRect(fX + i * (fW / 5), hY - size * 0.08, size * 0.06, size * 0.1); // messy tufts
+            break;
+        case 'xi':
+            ctx.fillStyle = '#1A1A1A'; ctx.fillRect(fX, hY, fW, size * 0.1); break;
+        case 'kim':
+            ctx.fillStyle = '#1A1A1A'; ctx.fillRect(fX - size * 0.02, hY, fW + size * 0.04, size * 0.15);
+            ctx.fillStyle = '#333'; ctx.fillRect(fX - size * 0.05, hY - size * 0.05, fW + size * 0.1, size * 0.08); // military cap
+            break;
+        case 'greta':
+            ctx.fillStyle = '#C8A040';
+            ctx.fillRect(fX - size * 0.08, hY, size * 0.12, fH * 0.8); // left braid
+            ctx.fillRect(fX + fW - size * 0.04, hY, size * 0.12, fH * 0.8); // right braid
+            ctx.fillRect(fX, hY, fW, size * 0.1);
+            break;
+        case 'lula':
+            ctx.fillStyle = '#888'; ctx.fillRect(fX, hY, fW, size * 0.1);
+            ctx.fillRect(fX + fW * 0.15, fY + fH * 0.5, fW * 0.7, size * 0.08); // beard
+            break;
+        case 'putin':
+            ctx.fillStyle = '#F5CBA7'; ctx.fillRect(fX - size * 0.1, fY + fH, fW + size * 0.2, size * 0.2); // shirtless
+            break;
+        case 'elizabeth':
+            ctx.fillStyle = '#FFD700';
+            ctx.fillRect(fX + fW * 0.1, hY - size * 0.1, fW * 0.8, size * 0.08); // crown base
+            for (let i = 0; i < 3; i++) ctx.fillRect(fX + fW * 0.2 + i * fW * 0.25, hY - size * 0.16, size * 0.06, size * 0.08);
+            ctx.fillStyle = '#E0E0E0'; ctx.fillRect(fX, hY, fW, size * 0.1); // white hair
+            break;
+    }
+    ctx.strokeStyle = '#1A1A2E'; ctx.lineWidth = 2; ctx.strokeRect(x, y + yOff, size, size - yOff);
+    ctx.globalAlpha = 1;
+}
+
+// ============================================================
+// DRAW: HP BAR
+// ============================================================
+function drawHPBar(x, y, w, h, current, max) {
+    const pct = Math.max(0, current / max);
+    ctx.fillStyle = '#333'; ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = pct > 0.5 ? COLORS.hpGreen : pct > 0.25 ? COLORS.hpYellow : COLORS.hpRed;
+    ctx.fillRect(x, y, w * pct, h);
+    ctx.strokeStyle = '#1A1A2E'; ctx.lineWidth = 1; ctx.strokeRect(x, y, w, h);
+}
+
+// ============================================================
+// DRAW: FULL BATTLE SCREEN
+// ============================================================
+function drawBattle(now) {
+    // Screen shake
+    let shX = 0, shY = 0;
+    if (battle.screenShake > 0) {
+        const el = now - battle.screenShake;
+        if (el < 300) { shX = Math.sin(el * 0.05) * 3 * (1 - el / 300); shY = Math.cos(el * 0.07) * 3 * (1 - el / 300); }
+        else battle.screenShake = 0;
+    }
+    ctx.save();
+    ctx.translate(shX, shY);
+
+    // Background
+    ctx.fillStyle = '#1A2A3C'; ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+    ctx.fillStyle = '#2A3A4C';
+    ctx.beginPath(); ctx.ellipse(400, 400, 380, 100, 0, 0, Math.PI * 2); ctx.fill();
+
+    // Compute animation offsets
+    const animActive = battle.anim.type === 'attack';
+    const animElapsed = animActive ? now - battle.anim.startTime : 0;
+    const animPct = animActive ? Math.sin(animElapsed / battle.anim.duration * Math.PI) : 0;
+
+    // === ENEMY (top-right) ===
+    const eSlide = (animActive && !battle.anim.isPlayer) ? animPct * -15 : 0;
+    const eFlashOn = (animActive && battle.anim.isPlayer) && Math.floor(animElapsed / 80) % 2 === 0;
+
+    if (!eFlashOn) {
+        drawPoliticianPortrait(battle.wild.id, 520 + eSlide, 60, 80, battle.enemyFaintAnim);
+    }
+    // Enemy info
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(460, 10, 320, 50);
+    ctx.strokeStyle = TYPE_COLORS[battle.wild.type]; ctx.lineWidth = 2; ctx.strokeRect(460, 10, 320, 50);
+    drawText(battle.wild.name, 470, 16, 1.5, COLORS.white);
+    drawText('Lv' + battle.wild.level, 720, 16, 1.5, COLORS.lightGray);
+    // Smooth HP drain
+    battle.enemyHpDisplay += (battle.wild.hp - battle.enemyHpDisplay) * 0.15;
+    if (Math.abs(battle.enemyHpDisplay - battle.wild.hp) < 1) battle.enemyHpDisplay = battle.wild.hp;
+    drawHPBar(470, 38, 200, 12, battle.enemyHpDisplay, battle.wild.maxHp);
+    drawText(Math.ceil(battle.enemyHpDisplay) + '/' + battle.wild.maxHp, 680, 37, 1, COLORS.lightGray);
+    ctx.fillStyle = TYPE_COLORS[battle.wild.type]; ctx.fillRect(630, 16, 6, 6);
+
+    // === PLAYER (bottom-left) ===
+    const pSlide = (animActive && battle.anim.isPlayer) ? animPct * 15 : 0;
+    const pFlashOn = (animActive && !battle.anim.isPlayer) && Math.floor(animElapsed / 80) % 2 === 0;
+
+    if (!pFlashOn) {
+        drawPoliticianPortrait(battle.playerPol.id, 120 + pSlide, 250, 80, battle.playerFaintAnim);
+    }
+    // Player info
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(20, 200, 320, 50);
+    ctx.strokeStyle = TYPE_COLORS[battle.playerPol.type]; ctx.lineWidth = 2; ctx.strokeRect(20, 200, 320, 50);
+    drawText(battle.playerPol.name, 30, 206, 1.5, COLORS.white);
+    drawText('Lv' + battle.playerPol.level, 280, 206, 1.5, COLORS.lightGray);
+    battle.playerHpDisplay += (battle.playerPol.hp - battle.playerHpDisplay) * 0.15;
+    if (Math.abs(battle.playerHpDisplay - battle.playerPol.hp) < 1) battle.playerHpDisplay = battle.playerPol.hp;
+    drawHPBar(30, 228, 200, 12, battle.playerHpDisplay, battle.playerPol.maxHp);
+    drawText(Math.ceil(battle.playerHpDisplay) + '/' + battle.playerPol.maxHp, 240, 227, 1, COLORS.lightGray);
+
+    // Party indicator dots
+    for (let i = 0; i < 3; i++) {
+        ctx.fillStyle = i < gameState.party.length ? (gameState.party[i].hp > 0 ? COLORS.hpGreen : COLORS.hpRed) : '#555';
+        ctx.beginPath(); ctx.arc(30 + i * 20, 248, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#1A1A2E'; ctx.lineWidth = 1; ctx.stroke();
+    }
+    // XP bar
+    const xpPct = battle.playerPol.xpToNext > 0 ? battle.playerPol.xp / battle.playerPol.xpToNext : 0;
+    ctx.fillStyle = '#333'; ctx.fillRect(30, 258, 200, 4);
+    ctx.fillStyle = '#5DADE2'; ctx.fillRect(30, 258, 200 * xpPct, 4);
+
+    // === TURN INDICATOR BANNER ===
+    if (battle.turnIndicator) {
+        const ti = battle.turnIndicator;
+        const elapsed = performance.now() - ti.startTime;
+        if (elapsed < 600) {
+            const alpha = elapsed < 400 ? 1 : 1 - ((elapsed - 400) / 200);
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = ti.color;
+            ctx.fillRect(200, 160, 400, 40);
+            ctx.strokeStyle = COLORS.white;
+            ctx.lineWidth = 2;
+            ctx.strokeRect(200, 160, 400, 40);
+            drawText(ti.text, 300, 170, 2, COLORS.white);
+            ctx.globalAlpha = 1;
+        } else {
+            battle.turnIndicator = null;
+        }
+    }
+
+    // === BOTTOM PANEL ===
+    ctx.fillStyle = 'rgba(26,26,46,0.95)'; ctx.fillRect(0, 370, CONFIG.canvasWidth, 230);
+    ctx.strokeStyle = COLORS.gold; ctx.lineWidth = 2; ctx.strokeRect(2, 372, CONFIG.canvasWidth - 4, 226);
+
+    if (battle.phase === 'menu') drawBattleMenu();
+    else if (battle.phase === 'fight_select') drawFightMenu();
+    else if (battle.phase === 'item_select') drawItemMenu();
+    else if (battle.phase === 'switch_select') drawSwitchMenu();
+    else drawBattleMessageBox(now);
+
+    ctx.restore();
+
+    // Debate overlay (outside shake)
+    if (battle.phase === 'debate') drawDebate(now);
+}
+
+function drawBattleMenu() {
+    drawText('What will you do?', 20, 385, 2, COLORS.gold);
+    BATTLE_MENU.forEach(function(opt, i) {
+        const col = i % 3, row = Math.floor(i / 3);
+        const bx = 20 + col * 260, by = 420 + row * 70, bw = 240, bh = 55;
+        let enabled = true;
+        let label = opt;
+        if (opt === 'Debate') { enabled = battle.canDebate; if (!enabled) label = 'Debate (HP too high)'; }
+        if (opt === 'Run') enabled = battle.canRun;
+        const sel = i === battle.menuSel;
+        ctx.fillStyle = !enabled ? '#333' : sel ? 'rgba(243,156,18,0.4)' : 'rgba(44,62,80,0.6)';
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.strokeStyle = sel ? COLORS.gold : '#555'; ctx.lineWidth = sel ? 2 : 1; ctx.strokeRect(bx, by, bw, bh);
+        const fs = label.length > 16 ? 1.2 : 1.5;
+        drawText(label, bx + 10, by + 15 + (fs < 1.5 ? 4 : 0), fs, !enabled ? '#666' : sel ? COLORS.gold : COLORS.white);
+    });
+}
+
+function drawFightMenu() {
+    drawText('Choose a move:', 20, 385, 2, COLORS.gold);
+    battle.playerPol.moves.forEach(function(mid, i) {
+        const move = getMoveById(mid); if (!move) return;
+        const bx = 20 + (i % 2) * 390, by = 420 + Math.floor(i / 2) * 70, bw = 370, bh = 55;
+        const disabled = mid === battle.playerDisabledMove;
+        const sel = i === battle.moveSel;
+        const tc = TYPE_COLORS[move.type] || COLORS.white;
+        ctx.fillStyle = disabled ? '#333' : sel ? 'rgba(243,156,18,0.3)' : 'rgba(44,62,80,0.6)';
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.strokeStyle = sel ? COLORS.gold : tc; ctx.lineWidth = sel ? 2 : 1; ctx.strokeRect(bx, by, bw, bh);
+        ctx.fillStyle = tc; ctx.fillRect(bx + 5, by + 5, 8, 8);
+        drawText(move.name, bx + 18, by + 6, 1.5, disabled ? '#666' : COLORS.white);
+        drawText((move.power > 0 ? 'Pow:' + move.power : 'Status') + ' Acc:' + move.accuracy + '%', bx + 18, by + 28, 1, disabled ? '#555' : COLORS.lightGray);
+        if (disabled) drawText('DISABLED', bx + 250, by + 15, 1, COLORS.red);
+    });
+    drawText('Esc: back', 20, 570, 1, COLORS.lightGray);
+}
+
+function drawItemMenu() {
+    drawText('Use an item:', 20, 385, 2, COLORS.gold);
+    const items = gameState.bag;
+    if (items.length === 0) { drawText('No items!', 20, 430, 2, COLORS.lightGray); }
+    else {
+        items.forEach(function(b, i) {
+            const item = ITEMS.find(it => it.id === b.id);
+            const bx = 20, by = 420 + i * 45, bw = 750, bh = 38;
+            const sel = i === battle.itemSel;
+            ctx.fillStyle = sel ? 'rgba(243,156,18,0.3)' : 'rgba(44,62,80,0.6)';
+            ctx.fillRect(bx, by, bw, bh);
+            ctx.strokeStyle = sel ? COLORS.gold : '#555'; ctx.lineWidth = 1; ctx.strokeRect(bx, by, bw, bh);
+            drawText(item.name + ' x' + b.qty, bx + 10, by + 10, 1.5, sel ? COLORS.gold : COLORS.white);
+            drawText(item.description, bx + 320, by + 12, 1, COLORS.lightGray);
+        });
+    }
+    drawText('Esc: back', 20, 570, 1, COLORS.lightGray);
+}
+
+function drawSwitchMenu() {
+    drawText('Choose a politician:', 20, 385, 2, COLORS.gold);
+    gameState.party.forEach(function(p, i) {
+        const bx = 20, by = 420 + i * 50, bw = 750, bh = 42;
+        const alive = p.hp > 0;
+        const sel = i === battle.switchSel;
+        ctx.fillStyle = !alive ? '#2A1A1A' : sel ? 'rgba(243,156,18,0.3)' : 'rgba(44,62,80,0.6)';
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.strokeStyle = sel ? COLORS.gold : '#555'; ctx.lineWidth = 1; ctx.strokeRect(bx, by, bw, bh);
+        drawText(p.name + ' Lv' + p.level, bx + 10, by + 8, 1.5, alive ? (sel ? COLORS.gold : COLORS.white) : '#666');
+        drawText(p.hp + '/' + p.maxHp + ' HP', bx + 400, by + 10, 1.5, alive ? COLORS.hpGreen : COLORS.hpRed);
+        ctx.fillStyle = TYPE_COLORS[p.type]; ctx.fillRect(bx + 350, by + 12, 8, 8);
+    });
+    if (battle.playerPol.hp > 0) drawText('Esc: back', 20, 570, 1, COLORS.lightGray);
+}
+
+function drawBattleMessageBox(now) {
+    const line = battle.messages[battle.msgIndex] || '';
+    const shown = line.substring(0, battle.msgCharIdx);
+
+    let textColor = COLORS.white;
+    if (battle.playerPol && shown.startsWith(battle.playerPol.name)) {
+        textColor = '#5DADE2';
+    } else if (battle.wild && shown.startsWith(battle.wild.name)) {
+        textColor = '#E8735A';
+    } else if (shown.startsWith("It's super")) {
+        textColor = COLORS.gold;
+    } else if (shown.startsWith("It's not")) {
+        textColor = COLORS.lightGray;
+    }
+
+    drawText(shown, 20, 420, 2, textColor);
+
+    if (battle.msgCharIdx >= line.length && Math.floor(now / 400) % 2 === 0) {
+        drawText('>', CONFIG.canvasWidth - 40, 570, 2, COLORS.gold);
+    }
+}
+
+// ============================================================
+// BATTLE INPUT (keyboard)
+// ============================================================
+function handleBattleInput(now) {
+    // Animation tick
+    if (battle.anim.type === 'attack') {
+        if (now - battle.anim.startTime >= battle.anim.duration) {
+            const cb = battle.anim.callback;
+            battle.anim = { type: null };
+            if (cb) cb();
+        }
+        return;
+    }
+
+    if (battle.phase === 'debate') {
+        updateDebate(now - lastFrame);
+        if (battle.debateResult) {
+            if (keysPressed.enter || keysPressed.space) {
+                keysPressed.enter = false; keysPressed.space = false;
+                finishDebate();
+            }
+        }
+        return;
+    }
+
+    updateBattleMessage(now);
+
+    if (battle.phase === 'message' || battle.phase === 'intro') {
+        if (keysPressed.enter || keysPressed.space) {
+            keysPressed.enter = false; keysPressed.space = false;
+            advanceBattleMessage();
+        }
+        return;
+    }
+
+    if (battle.phase === 'animating') return;
+
+    const throttle = now - lastMoveTime > 150;
+
+    if (battle.phase === 'menu') {
+        if (keysHeld.left && throttle) { battle.menuSel = Math.max(0, battle.menuSel - 1); sfx.menuSelect(); lastMoveTime = now; }
+        if (keysHeld.right && throttle) { battle.menuSel = Math.min(4, battle.menuSel + 1); sfx.menuSelect(); lastMoveTime = now; }
+        if (keysHeld.up && throttle) { battle.menuSel = Math.max(0, battle.menuSel - 3); sfx.menuSelect(); lastMoveTime = now; }
+        if (keysHeld.down && throttle) { battle.menuSel = Math.min(4, battle.menuSel + 3); sfx.menuSelect(); lastMoveTime = now; }
+        if (keysPressed.enter || keysPressed.space) {
+            keysPressed.enter = false; keysPressed.space = false;
+            const sel = BATTLE_MENU[battle.menuSel];
+            if (sel === 'Fight') { battle.phase = 'fight_select'; battle.moveSel = 0; sfx.menuConfirm(); }
+            else if (sel === 'Debate' && battle.canDebate) { sfx.menuConfirm(); startDebate(); }
+            else if (sel === 'Item') { battle.phase = 'item_select'; battle.itemSel = 0; sfx.menuConfirm(); }
+            else if (sel === 'Switch') { battle.phase = 'switch_select'; battle.switchSel = 0; sfx.menuConfirm(); }
+            else if (sel === 'Run' && battle.canRun) { sfx.menuConfirm(); resolveTurn({ type: 'run' }); }
+        }
+    } else if (battle.phase === 'fight_select') {
+        const ml = battle.playerPol.moves.length;
+        if (keysHeld.left && throttle) { battle.moveSel = Math.max(0, battle.moveSel - 1); sfx.menuSelect(); lastMoveTime = now; }
+        if (keysHeld.right && throttle) { battle.moveSel = Math.min(ml - 1, battle.moveSel + 1); sfx.menuSelect(); lastMoveTime = now; }
+        if (keysHeld.up && throttle) { battle.moveSel = Math.max(0, battle.moveSel - 2); sfx.menuSelect(); lastMoveTime = now; }
+        if (keysHeld.down && throttle) { battle.moveSel = Math.min(ml - 1, battle.moveSel + 2); sfx.menuSelect(); lastMoveTime = now; }
+        if (keysPressed.escape) { keysPressed.escape = false; battle.phase = 'menu'; sfx.menuSelect(); }
+        if (keysPressed.enter || keysPressed.space) {
+            keysPressed.enter = false; keysPressed.space = false;
+            const mid = battle.playerPol.moves[battle.moveSel];
+            if (mid !== battle.playerDisabledMove) { sfx.menuConfirm(); resolveTurn({ type: 'fight', moveId: mid }); }
+        }
+    } else if (battle.phase === 'item_select') {
+        if (keysHeld.up && throttle) { battle.itemSel = Math.max(0, battle.itemSel - 1); sfx.menuSelect(); lastMoveTime = now; }
+        if (keysHeld.down && throttle) { battle.itemSel = Math.min(gameState.bag.length - 1, battle.itemSel + 1); sfx.menuSelect(); lastMoveTime = now; }
+        if (keysPressed.escape) { keysPressed.escape = false; battle.phase = 'menu'; sfx.menuSelect(); }
+        if ((keysPressed.enter || keysPressed.space) && gameState.bag.length > 0) {
+            keysPressed.enter = false; keysPressed.space = false;
+            sfx.menuConfirm(); resolveTurn({ type: 'item', itemId: gameState.bag[battle.itemSel].id });
+        }
+    } else if (battle.phase === 'switch_select') {
+        if (keysHeld.up && throttle) { battle.switchSel = Math.max(0, battle.switchSel - 1); sfx.menuSelect(); lastMoveTime = now; }
+        if (keysHeld.down && throttle) { battle.switchSel = Math.min(gameState.party.length - 1, battle.switchSel + 1); sfx.menuSelect(); lastMoveTime = now; }
+        if (keysPressed.escape && battle.playerPol.hp > 0) { keysPressed.escape = false; battle.phase = 'menu'; sfx.menuSelect(); }
+        if (keysPressed.enter || keysPressed.space) {
+            keysPressed.enter = false; keysPressed.space = false;
+            const t = gameState.party[battle.switchSel];
+            if (t.hp > 0 && battle.switchSel !== battle.activeIndex) {
+                sfx.menuConfirm(); resolveTurn({ type: 'switch', index: battle.switchSel });
+            }
+        }
+    }
+}
+
+// ============================================================
+// BATTLE CLICK HANDLING
+// ============================================================
+function handleBattleClick(cx, cy) {
+    if (battle.phase === 'debate') {
+        if (battle.debateResult) { finishDebate(); return; }
+        handleDebateClick(cx, cy); return;
+    }
+    if (battle.phase === 'message' || battle.phase === 'intro') { advanceBattleMessage(); return; }
+
+    if (battle.phase === 'menu') {
+        BATTLE_MENU.forEach(function(opt, i) {
+            const col = i % 3, row = Math.floor(i / 3);
+            const bx = 20 + col * 260, by = 420 + row * 70, bw = 240, bh = 55;
+            if (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh) {
+                battle.menuSel = i;
+                if (opt === 'Fight') { battle.phase = 'fight_select'; battle.moveSel = 0; sfx.menuConfirm(); }
+                else if (opt === 'Debate' && battle.canDebate) { sfx.menuConfirm(); startDebate(); }
+                else if (opt === 'Item') { battle.phase = 'item_select'; battle.itemSel = 0; sfx.menuConfirm(); }
+                else if (opt === 'Switch') { battle.phase = 'switch_select'; battle.switchSel = 0; sfx.menuConfirm(); }
+                else if (opt === 'Run' && battle.canRun) { sfx.menuConfirm(); resolveTurn({ type: 'run' }); }
+            }
+        });
+    } else if (battle.phase === 'fight_select') {
+        battle.playerPol.moves.forEach(function(mid, i) {
+            const bx = 20 + (i % 2) * 390, by = 420 + Math.floor(i / 2) * 70, bw = 370, bh = 55;
+            if (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh && mid !== battle.playerDisabledMove) {
+                sfx.menuConfirm(); resolveTurn({ type: 'fight', moveId: mid });
+            }
+        });
+    } else if (battle.phase === 'item_select') {
+        gameState.bag.forEach(function(b, i) {
+            const bx = 20, by = 420 + i * 45, bw = 750, bh = 38;
+            if (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh) {
+                sfx.menuConfirm(); resolveTurn({ type: 'item', itemId: b.id });
+            }
+        });
+    } else if (battle.phase === 'switch_select') {
+        gameState.party.forEach(function(p, i) {
+            const bx = 20, by = 420 + i * 50, bw = 750, bh = 42;
+            if (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh && p.hp > 0 && i !== battle.activeIndex) {
+                sfx.menuConfirm(); resolveTurn({ type: 'switch', index: i });
+            }
+        });
+    }
+}
+
+// ============================================================
+// SHOP SYSTEM
+// ============================================================
+let shopOpen = false;
+let shopSel = 0;
+const SHOP_ITEMS = ITEMS.filter(i => i.cost > 0);
+
+function openShop() { shopOpen = true; shopSel = 0; sfx.menuConfirm(); }
+
+function drawShop() {
+    if (!shopOpen) return;
+    ctx.fillStyle = 'rgba(0,0,0,0.8)'; ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+    const bw = 500, bh = 340, bx = (CONFIG.canvasWidth - bw) / 2, by = (CONFIG.canvasHeight - bh) / 2;
+    ctx.fillStyle = COLORS.darkBlue; ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeStyle = COLORS.gold; ctx.lineWidth = 3; ctx.strokeRect(bx, by, bw, bh);
+    drawText('CAMPAIGN SHOP', bx + 120, by + 12, 2, COLORS.gold);
+    drawText('Funds: $' + gameState.funds, bx + 20, by + 40, 1.5, COLORS.teal);
+
+    SHOP_ITEMS.forEach(function(item, i) {
+        const oy = by + 70 + i * 60;
+        if (i === shopSel) { ctx.fillStyle = 'rgba(243,156,18,0.3)'; ctx.fillRect(bx + 10, oy - 4, bw - 20, 50); }
+        const canAfford = gameState.funds >= item.cost;
+        drawText(item.name, bx + 20, oy, 2, canAfford ? COLORS.white : '#666');
+        drawText('$' + item.cost, bx + 360, oy, 2, canAfford ? COLORS.gold : '#666');
+        drawText(item.description, bx + 20, oy + 26, 1, COLORS.lightGray);
+    });
+
+    const exitY = by + 70 + SHOP_ITEMS.length * 60;
+    if (shopSel === SHOP_ITEMS.length) { ctx.fillStyle = 'rgba(243,156,18,0.3)'; ctx.fillRect(bx + 10, exitY - 4, bw - 20, 30); }
+    drawText('Exit Shop', bx + 20, exitY, 2, COLORS.white);
+    drawText('Up/Down: browse  Enter: buy  Esc: exit', bx + 40, by + bh - 24, 1, COLORS.lightGray);
+}
+
+function handleShopInput() {
+    const throttle = performance.now() - lastMoveTime > CONFIG.moveDelay;
+    if (keysHeld.up && throttle) { shopSel = (shopSel - 1 + SHOP_ITEMS.length + 1) % (SHOP_ITEMS.length + 1); sfx.menuSelect(); lastMoveTime = performance.now(); }
+    if (keysHeld.down && throttle) { shopSel = (shopSel + 1) % (SHOP_ITEMS.length + 1); sfx.menuSelect(); lastMoveTime = performance.now(); }
+    if (keysPressed.enter || keysPressed.space) {
+        keysPressed.enter = false; keysPressed.space = false;
+        if (shopSel === SHOP_ITEMS.length) { shopOpen = false; sfx.menuSelect(); return; }
+        const item = SHOP_ITEMS[shopSel];
+        if (gameState.funds >= item.cost) {
+            gameState.funds -= item.cost;
+            const existing = gameState.bag.find(b => b.id === item.id);
+            if (existing) existing.qty++; else gameState.bag.push({ id: item.id, qty: 1 });
+            sfx.menuConfirm();
+        } else { sfx.catchFail(); }
+    }
+    if (keysPressed.escape) { keysPressed.escape = false; shopOpen = false; sfx.menuSelect(); }
+}
+
+
+// === REGIONS MODULE (Phase 3) ===
+// ============================================================
+// POLITI-MON REGIONS MODULE (Phase 3)
+// ============================================================
+// Adds: Europe, Asia, Global South, UN Summit maps
+//       Region transitions with fade + name text
+//       Boss sprites on UN Summit
+//       Victory screen when Politi-dex is complete
+//
+// Integration:
+// 1. Paste this code AFTER the battle system code and BEFORE the main game loop
+// 2. Add SCREENS.REGION_TRANSITION = 'region_transition' and SCREENS.VICTORY = 'victory' to SCREENS object
+// 3. Update the gate handler in tryMove (see bottom of this file for instructions)
+// 4. Add the new screen handlers to the main game loop (see bottom)
+// ============================================================
+
+// === MAP DEFINITIONS ===
+// All maps: 30x25 tiles (same as DC for consistency)
+// Layout: walls around edge, rally grounds for encounters, lobby HQ building, gate in/out
+
+function createEuropeMap() {
+    const W = 30, H = 25;
+    const m = Array.from({ length: H }, () => Array(W).fill(T.GROUND));
+    // Boundary walls
+    for (let x = 0; x < W; x++) { m[0][x] = T.WALL; m[H-1][x] = T.WALL; }
+    for (let y = 0; y < H; y++) { m[y][0] = T.WALL; m[y][W-1] = T.WALL; }
+    // Lobby HQ building (top-right area)
+    for (let y = 3; y <= 8; y++) for (let x = 20; x <= 26; x++) m[y][x] = T.WALL;
+    m[9][23] = T.DOOR;
+    // Rally grounds (large central-left area)
+    for (let y = 10; y <= 20; y++) for (let x = 3; x <= 14; x++) m[y][x] = T.RALLY;
+    // Trees (scattered, European park feel)
+    [[2,2],[5,4],[9,3],[16,5],[18,12],[27,15],[4,22],[12,22],[25,22],[17,18],[27,4],[14,6]].forEach(([x,y]) => {
+        if (x > 0 && x < W-1 && y > 0 && y < H-1 && m[y][x] === T.GROUND) m[y][x] = T.TREE;
+    });
+    // NPCs
+    m[6][17] = T.NPC1;
+    m[14][18] = T.NPC2;
+    m[21][10] = T.NPC3;
+    // Sign
+    m[9][15] = T.SIGN;
+    // Gate: left edge = back to DC, right edge = to Asia
+    m[12][1] = T.GATE;   // back gate (west)
+    m[12][28] = T.GATE;  // forward gate (east)
+    return m;
+}
+
+function createAsiaMap() {
+    const W = 30, H = 25;
+    const m = Array.from({ length: H }, () => Array(W).fill(T.GROUND));
+    for (let x = 0; x < W; x++) { m[0][x] = T.WALL; m[H-1][x] = T.WALL; }
+    for (let y = 0; y < H; y++) { m[y][0] = T.WALL; m[y][W-1] = T.WALL; }
+    // Lobby HQ (bottom-left)
+    for (let y = 16; y <= 21; y++) for (let x = 2; x <= 8; x++) m[y][x] = T.WALL;
+    m[15][5] = T.DOOR;
+    // Rally grounds (right side, large area)
+    for (let y = 4; y <= 14; y++) for (let x = 16; x <= 27; x++) m[y][x] = T.RALLY;
+    // Trees
+    [[3,3],[7,5],[12,3],[14,8],[10,14],[25,18],[22,22],[5,12],[28,2],[13,20]].forEach(([x,y]) => {
+        if (x > 0 && x < W-1 && y > 0 && y < H-1 && m[y][x] === T.GROUND) m[y][x] = T.TREE;
+    });
+    // Wall structures (pagoda-like)
+    for (let y = 6; y <= 9; y++) for (let x = 10; x <= 13; x++) m[y][x] = T.WALL;
+    // NPCs
+    m[4][6] = T.NPC1;
+    m[12][14] = T.NPC2;
+    m[22][20] = T.NPC3;
+    // Sign
+    m[15][12] = T.SIGN;
+    // Gates
+    m[12][1] = T.GATE;   // back to Europe
+    m[12][28] = T.GATE;  // forward to Global South
+    return m;
+}
+
+function createGlobalSouthMap() {
+    const W = 30, H = 25;
+    const m = Array.from({ length: H }, () => Array(W).fill(T.GROUND));
+    for (let x = 0; x < W; x++) { m[0][x] = T.WALL; m[H-1][x] = T.WALL; }
+    for (let y = 0; y < H; y++) { m[y][0] = T.WALL; m[y][W-1] = T.WALL; }
+    // Lobby HQ (center-top)
+    for (let y = 2; y <= 7; y++) for (let x = 11; x <= 18; x++) m[y][x] = T.WALL;
+    m[8][14] = T.DOOR;
+    // Rally grounds (bottom half, spread out)
+    for (let y = 14; y <= 22; y++) for (let x = 2; x <= 12; x++) m[y][x] = T.RALLY;
+    for (let y = 14; y <= 22; y++) for (let x = 17; x <= 27; x++) m[y][x] = T.RALLY;
+    // Trees (tropical feel, more dense)
+    [[2,3],[4,5],[7,3],[22,3],[25,5],[27,8],[3,12],[8,12],[20,12],[26,12],[14,18],[14,14],[9,10],[21,10]].forEach(([x,y]) => {
+        if (x > 0 && x < W-1 && y > 0 && y < H-1 && m[y][x] === T.GROUND) m[y][x] = T.TREE;
+    });
+    // NPCs
+    m[10][5] = T.NPC1;
+    m[10][24] = T.NPC2;
+    m[22][14] = T.NPC3;
+    // Sign
+    m[8][8] = T.SIGN;
+    // Gates
+    m[12][1] = T.GATE;   // back to Asia
+    m[12][28] = T.GATE;  // forward to UN Summit
+    return m;
+}
+
+function createUNSummitMap() {
+    const W = 30, H = 25;
+    const m = Array.from({ length: H }, () => Array(W).fill(T.GROUND));
+    for (let x = 0; x < W; x++) { m[0][x] = T.WALL; m[H-1][x] = T.WALL; }
+    for (let y = 0; y < H; y++) { m[y][0] = T.WALL; m[y][W-1] = T.WALL; }
+    // Lobby HQ (bottom-center)
+    for (let y = 18; y <= 22; y++) for (let x = 11; x <= 18; x++) m[y][x] = T.WALL;
+    m[17][14] = T.DOOR;
+    // Grand hall walls (symmetrical, imposing)
+    for (let y = 3; y <= 7; y++) { m[y][5] = T.WALL; m[y][24] = T.WALL; }
+    for (let x = 5; x <= 24; x++) m[3][x] = T.WALL;
+    // No rally grounds -- bosses only, no random encounters
+    // Trees (formal garden)
+    [[3,10],[3,14],[26,10],[26,14],[8,16],[21,16],[10,10],[19,10]].forEach(([x,y]) => {
+        if (x > 0 && x < W-1 && y > 0 && y < H-1 && m[y][x] === T.GROUND) m[y][x] = T.TREE;
+    });
+    // NPCs
+    m[15][7] = T.NPC1;
+    m[15][22] = T.NPC2;
+    m[12][14] = T.NPC3;
+    // Sign
+    m[10][14] = T.SIGN;
+    // Gate: back only (no forward, this is the final area)
+    m[12][1] = T.GATE;
+    // Boss positions -- we use NPC-like tiles but will handle them specially
+    // Putin at (10, 6), Elizabeth at (19, 6) -- inside the grand hall
+    // We mark these as GROUND; boss sprites are drawn in the overworld draw code
+    return m;
+}
+
+// Create all maps
+const europeMap = createEuropeMap();
+const asiaMap = createAsiaMap();
+const globalSouthMap = createGlobalSouthMap();
+const unSummitMap = createUNSummitMap();
+
+// === REGION REGISTRY ===
+const REGIONS = {
+    dc:          { map: dcMap, w: CONFIG.dcMapWidth, h: CONFIG.dcMapHeight, name: 'Washington DC', forwardGate: 'europe', backGate: null },
+    europe:      { map: europeMap, w: 30, h: 25, name: 'Europe', forwardGate: 'asia', backGate: 'dc' },
+    asia:        { map: asiaMap, w: 30, h: 25, name: 'Asia', forwardGate: 'globalsouth', backGate: 'europe' },
+    globalsouth: { map: globalSouthMap, w: 30, h: 25, name: 'The Global South', forwardGate: 'unsummit', backGate: 'asia' },
+    unsummit:    { map: unSummitMap, w: 30, h: 25, name: 'The UN Summit', forwardGate: null, backGate: 'globalsouth' }
+};
+
+// Spawn points when entering each region
+const REGION_SPAWNS = {
+    dc:          { fromBack: { x: 15, y: 13 }, fromFront: { x: 27, y: 12 } },
+    europe:      { fromBack: { x: 27, y: 12 }, fromFront: { x: 2, y: 12 } },
+    asia:        { fromBack: { x: 27, y: 12 }, fromFront: { x: 2, y: 12 } },
+    globalsouth: { fromBack: { x: 27, y: 12 }, fromFront: { x: 2, y: 12 } },
+    unsummit:    { fromBack: { x: 14, y: 15 }, fromFront: { x: 2, y: 12 } }
+};
+
+// === NPC DIALOGUE PER REGION ===
+const REGION_NPC_DIALOGUE = {
+    dc: {
+        NPC1: ['Welcome to Washington DC!', 'Watch out for politicians', 'in the rally grounds!'],
+        NPC2: ['I heard Biden dropped his', 'ice cream again.', 'Classic.'],
+        NPC3: ['The Lobby HQ is nearby.', 'Walk up to the brown door.', "They'll fix you right up!"]
+    },
+    europe: {
+        NPC1: ['Bienvenue! Welcome to Europe!', 'Macron and Boris are lurking', 'in the rally grounds.'],
+        NPC2: ['Brexit was a blunder.', 'But Boris still has fans', 'somehow.'],
+        NPC3: ['The gate east leads to Asia.', 'Pack some extra items!', 'It gets tougher.']
+    },
+    asia: {
+        NPC1: ['Welcome to Asia!', 'Xi and Kim are no joke.', 'Prepare your team carefully.'],
+        NPC2: ['Kim keeps launching missiles.', 'They miss most of the time.', 'Most of the time...'],
+        NPC3: ['The Global South awaits', 'beyond the eastern gate.', 'Good luck, lobbyist!']
+    },
+    globalsouth: {
+        NPC1: ['Welcome to the Global South!', 'Greta and Lula fight for', 'the environment here.'],
+        NPC2: ['How dare you not recycle!', 'Greta is watching.', 'Always watching.'],
+        NPC3: ['The UN Summit is ahead.', 'Only the strongest lobbyists', 'make it through!']
+    },
+    unsummit: {
+        NPC1: ['This is the UN Summit.', 'Putin patrols the west hall.', 'The Queen haunts the east.'],
+        NPC2: ['Defeat both bosses to', 'complete your collection!', 'Good luck!'],
+        NPC3: ['No random encounters here.', 'Only the two bosses remain.', 'Choose your battles wisely.']
+    }
+};
+
+// Sign text per region
+const REGION_SIGN_TEXT = {
+    dc: ['WASHINGTON DC', 'Where every handshake', 'has a price tag.'],
+    europe: ['EUROPE', 'Where diplomacy is an art', 'and hair is a statement.'],
+    asia: ['ASIA', 'Where walls are great', 'and missiles are greater.'],
+    globalsouth: ['THE GLOBAL SOUTH', 'Where the rainforest rallies', 'and the climate strikes.'],
+    unsummit: ['THE UN SUMMIT', 'The final showdown.', 'Lobby them all!']
+};
+
+// === BOSS POSITIONS AND STATE ===
+const BOSS_POSITIONS = {
+    putin: { x: 10, y: 6, region: 'unsummit', defeated: false },
+    elizabeth: { x: 19, y: 6, region: 'unsummit', defeated: false }
+};
+
+function isBossAt(x, y) {
+    if (gameState.currentRegion !== 'unsummit') return null;
+    for (const [id, boss] of Object.entries(BOSS_POSITIONS)) {
+        if (boss.x === x && boss.y === y && !gameState.pokedex[id]) return id;
+    }
+    return null;
+}
+
+// === REGION TRANSITION ===
+let regionTransition = {
+    active: false,
+    startTime: 0,
+    targetRegion: '',
+    direction: 'forward', // 'forward' or 'back'
+    phase: 0 // 0=fade out, 1=show name, 2=fade in
+};
+
+function startRegionTransition(targetRegion, direction) {
+    regionTransition.active = true;
+    regionTransition.startTime = performance.now();
+    regionTransition.targetRegion = targetRegion;
+    regionTransition.direction = direction;
+    regionTransition.phase = 0;
+    prevScreen = gameScreen;
+    gameScreen = SCREENS.REGION_TRANSITION;
+}
+
+function updateRegionTransition(now) {
+    const elapsed = now - regionTransition.startTime;
+
+    if (regionTransition.phase === 0 && elapsed > 500) {
+        // Fade out complete, switch map
+        regionTransition.phase = 1;
+        regionTransition.startTime = now;
+        switchToRegion(regionTransition.targetRegion, regionTransition.direction);
+    } else if (regionTransition.phase === 1 && elapsed > 1200) {
+        // Name display complete, fade in
+        regionTransition.phase = 2;
+        regionTransition.startTime = now;
+    } else if (regionTransition.phase === 2 && elapsed > 500) {
+        // Done
+        regionTransition.active = false;
+        gameScreen = SCREENS.OVERWORLD;
+    }
+}
+
+function drawRegionTransition(now) {
+    const elapsed = now - regionTransition.startTime;
+
+    if (regionTransition.phase === 0) {
+        // Fade to black
+        const alpha = Math.min(elapsed / 500, 1);
+        ctx.fillStyle = 'rgba(0,0,0,' + alpha + ')';
+        ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+    } else if (regionTransition.phase === 1) {
+        // Black screen with region name
+        ctx.fillStyle = COLORS.black;
+        ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+        const region = REGIONS[regionTransition.targetRegion];
+        const name = region ? region.name : '???';
+        drawText('Entering:', 300, 250, 2, COLORS.lightGray);
+        drawText(name, 400 - name.length * 6, 290, 3, COLORS.gold);
+    } else if (regionTransition.phase === 2) {
+        // Draw new overworld, fade in from black
+        drawOverworld(now);
+        const alpha = 1 - Math.min(elapsed / 500, 1);
+        ctx.fillStyle = 'rgba(0,0,0,' + alpha + ')';
+        ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+    }
+}
+
+function switchToRegion(regionId, direction) {
+    const region = REGIONS[regionId];
+    if (!region) return;
+
+    gameState.currentRegion = regionId;
+    gameState.currentMap = regionId;
+    mapData = region.map;
+    mapW = region.w;
+    mapH = region.h;
+
+    // Set player position based on direction
+    const spawns = REGION_SPAWNS[regionId];
+    if (direction === 'forward') {
+        gameState.playerPos = { ...spawns.fromFront };
+    } else {
+        gameState.playerPos = { ...spawns.fromBack };
+    }
+
+    updateCamera();
+}
+
+// === HANDLE GATE INTERACTION ===
+// Call this from tryMove when the player steps on a GATE tile
+function handleGateStep(tileX) {
+    const region = REGIONS[gameState.currentRegion];
+    if (!region) return;
+
+    // Determine direction: left side of map = back gate, right side = forward gate
+    if (tileX <= 2 && region.backGate) {
+        startRegionTransition(region.backGate, 'back');
+    } else if (tileX >= mapW - 3 && region.forwardGate) {
+        startRegionTransition(region.forwardGate, 'forward');
+    } else if (tileX >= mapW - 3 && !region.forwardGate) {
+        // No forward gate (already at UN Summit)
+        startDialogue(["This is the final region.", "Defeat the bosses to win!"]);
+    } else if (tileX <= 2 && !region.backGate) {
+        // No back gate (at DC, shouldn't happen normally)
+        startDialogue(["You can't go back further."]);
+    }
+}
+
+// === CHECK FOR BOSS COLLISION ===
+// Call this from tryMove after standard movement
+function checkBossCollision() {
+    if (gameState.currentRegion !== 'unsummit') return;
+
+    const { x, y } = gameState.playerPos;
+    // Check adjacent tiles for bosses
+    const dirs = [[0,0],[0,-1],[0,1],[-1,0],[1,0]];
+    for (const [dx, dy] of dirs) {
+        const bossId = isBossAt(x + dx, y + dy);
+        if (bossId && (dx === 0 && dy === 0)) {
+            // Standing on boss tile -- trigger battle
+            const polData = getPoliticianData(bossId);
+            if (polData && !gameState.pokedex[bossId]) {
+                startBattleTransition(polData);
+                return;
+            }
+        }
+    }
+}
+
+// === INTERACT WITH BOSS (face them and press enter) ===
+function checkBossInteract() {
+    if (gameState.currentRegion !== 'unsummit') return false;
+
+    const { x, y } = gameState.playerPos;
+    let fx = x, fy = y;
+    if (playerDirection === 'up') fy--;
+    else if (playerDirection === 'down') fy++;
+    else if (playerDirection === 'left') fx--;
+    else if (playerDirection === 'right') fx++;
+
+    const bossId = isBossAt(fx, fy);
+    if (bossId) {
+        const polData = getPoliticianData(bossId);
+        if (polData && !gameState.pokedex[bossId]) {
+            startBattleTransition(polData);
+            return true;
+        }
+    }
+    return false;
+}
+
+// === DRAW BOSS SPRITES ON OVERWORLD ===
+function drawBossSprites() {
+    if (gameState.currentRegion !== 'unsummit') return;
+
+    for (const [id, boss] of Object.entries(BOSS_POSITIONS)) {
+        if (gameState.pokedex[id]) continue; // Already caught
+
+        const sx = boss.x * CONFIG.tileSize - cameraPos.x;
+        const sy = boss.y * CONFIG.tileSize - cameraPos.y;
+
+        // Skip if off screen
+        if (sx < -CONFIG.tileSize || sx > CONFIG.canvasWidth + CONFIG.tileSize) continue;
+        if (sy < -CONFIG.tileSize || sy > CONFIG.canvasHeight + CONFIG.tileSize) continue;
+
+        const s = CONFIG.tileSize;
+
+        // Draw a larger, more imposing NPC sprite for bosses
+        // Red glow/aura
+        ctx.fillStyle = 'rgba(231, 76, 60, 0.3)';
+        ctx.fillRect(sx - 2, sy - 2, s + 4, s + 4);
+
+        if (id === 'putin') {
+            // Shirtless, bald
+            ctx.fillStyle = '#F5CBA7'; ctx.fillRect(sx + 6, sy + 4, 20, 14); // Head
+            ctx.fillStyle = '#1A1A2E'; ctx.fillRect(sx + 10, sy + 8, 3, 2); ctx.fillRect(sx + 19, sy + 8, 3, 2); // Eyes
+            ctx.fillStyle = '#F5CBA7'; ctx.fillRect(sx + 6, sy + 16, 20, 12); // Shirtless torso
+            ctx.fillStyle = '#2C3E50'; ctx.fillRect(sx + 8, sy + 26, 6, 6); ctx.fillRect(sx + 18, sy + 26, 6, 6); // Pants
+        } else if (id === 'elizabeth') {
+            // Ghost queen with crown, semi-transparent
+            const ghostAlpha = 0.6 + Math.sin(performance.now() / 400) * 0.2;
+            ctx.globalAlpha = ghostAlpha;
+            ctx.fillStyle = '#E0E0E0'; ctx.fillRect(sx + 6, sy + 6, 20, 12); // Head (white hair)
+            ctx.fillStyle = '#F5CBA7'; ctx.fillRect(sx + 8, sy + 8, 16, 8); // Face
+            ctx.fillStyle = '#1A1A2E'; ctx.fillRect(sx + 11, sy + 10, 2, 2); ctx.fillRect(sx + 19, sy + 10, 2, 2); // Eyes
+            ctx.fillStyle = '#FFD700'; // Crown
+            ctx.fillRect(sx + 8, sy + 2, 16, 4);
+            ctx.fillRect(sx + 10, sy, 3, 4); ctx.fillRect(sx + 15, sy, 3, 4); ctx.fillRect(sx + 20, sy, 3, 4);
+            ctx.fillStyle = '#9B59B6'; ctx.fillRect(sx + 6, sy + 16, 20, 14); // Royal robe
+            ctx.globalAlpha = 1;
+        }
+
+        // Exclamation mark above
+        const bob = Math.sin(performance.now() / 300) * 2;
+        ctx.fillStyle = COLORS.red;
+        ctx.fillRect(sx + 14, sy - 8 + bob, 4, 6);
+        ctx.fillRect(sx + 14, sy - 1 + bob, 4, 2);
+    }
+}
+
+// === DRAW OVERWORLD (extracted for reuse) ===
+function drawOverworld(now) {
+    for (let ty = 0; ty < mapH; ty++) {
+        for (let tx = 0; tx < mapW; tx++) {
+            const sx = tx * CONFIG.tileSize - cameraPos.x;
+            const sy = ty * CONFIG.tileSize - cameraPos.y;
+            if (sx + CONFIG.tileSize < 0 || sx > CONFIG.canvasWidth) continue;
+            if (sy + CONFIG.tileSize < 0 || sy > CONFIG.canvasHeight) continue;
+            drawTile(mapData[ty][tx], sx, sy);
+        }
+    }
+    // Draw boss sprites before player so player renders on top
+    drawBossSprites();
+    // Draw player
+    const psx = gameState.playerPos.x * CONFIG.tileSize - cameraPos.x;
+    const psy = gameState.playerPos.y * CONFIG.tileSize - cameraPos.y;
+    drawPlayer(psx, psy);
+}
+
+// === REGION-AWARE NPC INTERACTION ===
+// Replace the existing checkInteract NPC logic with this
+function getRegionNPCDialogue(tileType) {
+    const region = gameState.currentRegion;
+    const dialogues = REGION_NPC_DIALOGUE[region];
+    if (!dialogues) return null;
+    if (tileType === T.NPC1) return dialogues.NPC1;
+    if (tileType === T.NPC2) return dialogues.NPC2;
+    if (tileType === T.NPC3) return dialogues.NPC3;
+    return null;
+}
+
+function getRegionSignText() {
+    return REGION_SIGN_TEXT[gameState.currentRegion] || ['A mysterious sign.'];
+}
+
+// === VICTORY CHECK ===
+function checkVictory() {
+    const caught = Object.keys(gameState.pokedex).length;
+    if (caught >= 10) {
+        gameScreen = SCREENS.VICTORY;
+        return true;
+    }
+    return false;
+}
+
+// === VICTORY SCREEN ===
+let victoryParticles = [];
+
+function initVictoryParticles() {
+    victoryParticles = [];
+    for (let i = 0; i < 50; i++) {
+        victoryParticles.push({
+            x: Math.random() * CONFIG.canvasWidth,
+            y: Math.random() * CONFIG.canvasHeight,
+            vx: (Math.random() - 0.5) * 3,
+            vy: -Math.random() * 2 - 1,
+            size: Math.random() * 4 + 2,
+            color: [COLORS.gold, COLORS.teal, COLORS.red, COLORS.white, '#9B59B6'][Math.floor(Math.random() * 5)],
+            life: 1
+        });
+    }
+}
+
+function drawVictoryScreen(now) {
+    ctx.fillStyle = COLORS.black;
+    ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+
+    // Confetti particles
+    if (victoryParticles.length === 0) initVictoryParticles();
+    victoryParticles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.y < -10) { p.y = CONFIG.canvasHeight + 10; p.x = Math.random() * CONFIG.canvasWidth; }
+        if (p.x < -10) p.x = CONFIG.canvasWidth + 10;
+        if (p.x > CONFIG.canvasWidth + 10) p.x = -10;
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x, p.y, p.size, p.size);
+    });
+
+    // Title
+    drawText('CONGRATULATIONS!', 100, 40, 3, COLORS.gold);
+    drawText(gameState.playerName + '!', 400 - gameState.playerName.length * 6, 90, 2, COLORS.white);
+
+    // Politician portraits in a circle/grid
+    const portraits = POLITICIANS;
+    const startX = 60, startY = 140, spacing = 75;
+    portraits.forEach((p, i) => {
+        const col = i % 5;
+        const row = Math.floor(i / 5);
+        const px = startX + col * (spacing + 70);
+        const py = startY + row * 100;
+        drawPoliticianPortrait(p.id, px, py, 50, 0);
+        drawText(p.name.split(' ')[0], px, py + 55, 1, COLORS.lightGray);
+    });
+
+    // Messages
+    drawText("You've lobbied every", 170, 380, 2, COLORS.white);
+    drawText('world leader!', 240, 415, 2, COLORS.white);
+    drawText('The Ultimate Political Party', 120, 460, 2, COLORS.gold);
+    drawText('has been assembled!', 190, 490, 2, COLORS.gold);
+    drawText('Politi-Dex: 100%', 270, 530, 2, COLORS.teal);
+
+    // Buttons
+    const blink = Math.floor(now / 500) % 2 === 0;
+    if (blink) drawText('Press Enter to continue', 210, 570, 1.5, COLORS.lightGray);
+}
+
+// === LOBBY MAP PER REGION ===
+// All regions share the same lobby interior layout
+// The lobby map is reused; we just track which region's lobby we're in
+
+function enterRegionLobbyHQ() {
+    gameState.currentMap = 'lobby';
+    gameState.lastLobbyHQ = gameState.currentRegion;
+    mapData = lobbyMap;
+    mapW = CONFIG.lobbyMapWidth;
+    mapH = CONFIG.lobbyMapHeight;
+    gameState.playerPos = { x: 7, y: 9 };
+    gameScreen = SCREENS.LOBBY_HQ;
+    const regionName = REGIONS[gameState.currentRegion] ? REGIONS[gameState.currentRegion].name : 'Lobby';
+    startDialogue(['Welcome to ' + regionName + ' HQ!', 'Heal up and buy items.', 'EXIT door is bottom-center.']);
+}
+
+function exitRegionLobbyHQ() {
+    const regionId = gameState.lastLobbyHQ || 'dc';
+    const region = REGIONS[regionId];
+    if (!region) return;
+
+    gameState.currentMap = regionId;
+    gameState.currentRegion = regionId;
+    mapData = region.map;
+    mapW = region.w;
+    mapH = region.h;
+
+    // Find the door tile in the map and spawn player below it
+    let doorX = 15, doorY = 13;
+    for (let ty = 0; ty < mapH; ty++) {
+        for (let tx = 0; tx < mapW; tx++) {
+            if (region.map[ty][tx] === T.DOOR) {
+                doorX = tx;
+                doorY = ty;
+            }
+        }
+    }
+    // Find a walkable tile adjacent to the door (check south, north, east, west)
+    const exitOffsets = [[0,1],[0,-1],[1,0],[-1,0]];
+    for (const [ox, oy] of exitOffsets) {
+        const ex = doorX + ox, ey = doorY + oy;
+        if (ex >= 0 && ex < mapW && ey >= 0 && ey < mapH) {
+            const t = region.map[ey][ex];
+            if (t === T.GROUND || t === T.RALLY) {
+                gameState.playerPos = { x: ex, y: ey };
+                break;
+            }
+        }
+    }
+    gameScreen = SCREENS.OVERWORLD;
+}
+
+
+// ============================================================
+// INTEGRATION INSTRUCTIONS FOR COWORK
+// ============================================================
+//
+// 1. Add to SCREENS object:
+//    REGION_TRANSITION: 'region_transition',
+//    VICTORY: 'victory'
+//
+// 2. Replace the enterLobbyHQ() function with enterRegionLobbyHQ()
+//    Replace the exitLobbyHQ() function with exitRegionLobbyHQ()
+//    (Or rename all calls to match)
+//
+// 3. In tryMove(), replace the GATE handler:
+//    OLD: else if (tile === T.GATE) { startDialogue(["More regions coming soon!"]); }
+//    NEW: else if (tile === T.GATE) { handleGateStep(nx); }
+//
+// 4. In tryMove(), replace the DOOR handler:
+//    OLD: if (tile === T.DOOR) { enterLobbyHQ(); }
+//    NEW: if (tile === T.DOOR) { enterRegionLobbyHQ(); }
+//
+// 5. In tryMove(), make rally/door/gate work for ALL regions, not just dc:
+//    Remove the 'if (gameState.currentMap === 'dc')' wrapper.
+//    Instead: check tile type directly regardless of current map.
+//    In the lobby map, keep the EXIT_DOOR check.
+//
+//    Simplified tryMove tile events:
+//    if (gameState.currentMap === 'lobby') {
+//        if (tile === T.EXIT_DOOR) exitRegionLobbyHQ();
+//    } else {
+//        if (tile === T.DOOR) enterRegionLobbyHQ();
+//        else if (tile === T.GATE) handleGateStep(nx);
+//        else if (tile === T.RALLY) checkRandomEncounter();
+//    }
+//    // Also check boss collision in UN Summit:
+//    checkBossCollision();
+//
+// 6. In checkInteract(), replace hardcoded NPC dialogues:
+//    For NPC tiles: use getRegionNPCDialogue(facingTile) or getRegionNPCDialogue(standingTile)
+//    For SIGN tiles: use getRegionSignText()
+//    For lobby interactions: keep as-is (receptionist heals, shop opens, terminal)
+//    Add: if (checkBossInteract()) return; // before NPC checks
+//
+// 7. In the main game loop UPDATE section, add:
+//    else if (gameScreen === SCREENS.REGION_TRANSITION) { updateRegionTransition(now); }
+//    // After battle ends (in endBattle or after debate success), add: checkVictory();
+//
+// 8. In the main game loop DRAW section, add:
+//    else if (gameScreen === SCREENS.REGION_TRANSITION) { drawRegionTransition(now); }
+//    else if (gameScreen === SCREENS.VICTORY) { drawVictoryScreen(now); }
+//
+// 9. Replace the overworld drawing code with drawOverworld(now) call
+//    (This handles tile drawing + boss sprites + player in one function)
+//
+// 10. In endBattle(), after the caught block, add:
+//     if (caught) { checkVictory(); }
+//
+// 11. In the victory screen, handle Enter key to return to overworld:
+//     if (gameScreen === SCREENS.VICTORY) {
+//         if (keysPressed.enter || keysPressed.space) {
+//             keysPressed.enter = false; keysPressed.space = false;
+//             gameScreen = SCREENS.OVERWORLD;
+//         }
+//     }
+//
+// 12. In loadGame(), when restoring map state, handle all regions:
+//     if (gameState.currentMap === 'lobby') { ... existing lobby restore ... }
+//     else {
+//         const region = REGIONS[gameState.currentMap];
+//         if (region) { mapData = region.map; mapW = region.w; mapH = region.h; }
+//         else { mapData = dcMap; mapW = CONFIG.dcMapWidth; mapH = CONFIG.dcMapHeight; }
+//         gameScreen = SCREENS.OVERWORLD;
+//     }
+
+
+// === INPUT HANDLER ===
+document.addEventListener('keydown', e => {
+    const k = e.key;
+    if (k === 'ArrowUp' || k === 'w') { keysHeld.up = true; e.preventDefault(); }
+    if (k === 'ArrowDown' || k === 's') { keysHeld.down = true; e.preventDefault(); }
+    if (k === 'ArrowLeft' || k === 'a') { keysHeld.left = true; e.preventDefault(); }
+    if (k === 'ArrowRight' || k === 'd') { keysHeld.right = true; e.preventDefault(); }
+    if (k === 'Enter') { keysPressed.enter = true; e.preventDefault(); }
+    if (k === ' ') { keysPressed.space = true; e.preventDefault(); }
+    if (k === 'Escape' || k === 'p' || k === 'P') { keysPressed.escape = true; }
+    // Text input for name entry
+    if (gameScreen === SCREENS.INTRO && intro.showName && !intro.showGoodluck) {
+        if (k === 'Backspace') {
+            intro.nameInput = intro.nameInput.slice(0, -1);
+        } else if (k.length === 1 && intro.nameInput.length < 18) {
+            intro.nameInput += k;
+        }
+    }
+});
+document.addEventListener('keyup', e => {
+    const k = e.key;
+    if (k === 'ArrowUp' || k === 'w') keysHeld.up = false;
+    if (k === 'ArrowDown' || k === 's') keysHeld.down = false;
+    if (k === 'ArrowLeft' || k === 'a') keysHeld.left = false;
+    if (k === 'ArrowRight' || k === 'd') keysHeld.right = false;
+});
+canvas.addEventListener('click', e => {
+    initAudio();
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = CONFIG.canvasWidth / rect.width;
+    const scaleY = CONFIG.canvasHeight / rect.height;
+    const cx = (e.clientX - rect.left) * scaleX;
+    const cy = (e.clientY - rect.top) * scaleY;
+    if (gameScreen === SCREENS.BATTLE) { handleBattleClick(cx, cy); return; }
+    if (gameScreen === SCREENS.TITLE) {
+        // Click on New Game / Continue
+        [0,1].forEach(i => {
+            const bx = 300, by = 330 + i * 70, bw = 200, bh = 44;
+            if (cx >= bx && cx <= bx + bw && cy >= by && cy <= by + bh) {
+                const disabled = i === 1 && !hasSave;
+                if (!disabled) {
+                    titleSel = i;
+                    sfx.menuConfirm();
+                    if (i === 0) {
+                        gameScreen = SCREENS.INTRO;
+                        intro = { stage: 0, charIdx: 0, lastCharTime: performance.now(), lines: intro.lines, nameInput: '', showName: false, goodluckTimer: 0, showGoodluck: false };
+                    } else {
+                        loadGame();
+                    }
+                }
+            }
+        });
+    } else if (gameScreen === SCREENS.INTRO) {
+        introPresetClick(cx, cy);
+    }
+});
+// === MAIN GAME LOOP ===
+let lastFrame = 0;
+function loop(now) {
+    const dt = now - lastFrame;
+    lastFrame = now;
+
+    // --- UPDATE ---
+
+    // Pause save message timer
+    if (pauseSaveMsgTimer > 0) {
+        pauseSaveMsgTimer -= dt;
+        if (pauseSaveMsgTimer <= 0) pauseSaveMsg = '';
+    }
+
+    // Screen-specific UPDATE
+    if (gameScreen === SCREENS.BATTLE) {
+        handleBattleInput(now);
+    } else if (gameScreen === SCREENS.BATTLE_TRANSITION) {
+        updateBattleTransition(now);
+    } else if (gameScreen === SCREENS.BLACKOUT) {
+        updateBlackout(now);
+    } else if (gameScreen === SCREENS.REGION_TRANSITION) {
+        updateRegionTransition(now);
+    } else if (gameScreen === SCREENS.VICTORY) {
+        if (keysPressed.enter || keysPressed.space) {
+            keysPressed.enter = false; keysPressed.space = false;
+            gameScreen = SCREENS.OVERWORLD;
+        }
+    } else if (pauseOpen) {
+        if (pauseSubscreen) {
+            // Subscreen is open -- only handle escape to go back
+            if (keysPressed.escape) {
+                keysPressed.escape = false;
+                pauseSubscreen = null;
+                sfx.menuSelect();
+            }
+        } else {
+            // Normal pause menu navigation
+            if (keysPressed.escape) {
+                keysPressed.escape = false;
+                pauseOpen = false;
+                sfx.menuSelect();
+            }
+            if (keysPressed.enter || keysPressed.space) {
+                keysPressed.enter = false; keysPressed.space = false;
+                handlePauseConfirm();
+            }
+            if (keysHeld.up && now - lastMoveTime > CONFIG.moveDelay) {
+                pauseSel = (pauseSel - 1 + PAUSE_OPTS.length) % PAUSE_OPTS.length;
+                sfx.menuSelect(); lastMoveTime = now;
+            }
+            if (keysHeld.down && now - lastMoveTime > CONFIG.moveDelay) {
+                pauseSel = (pauseSel + 1) % PAUSE_OPTS.length;
+                sfx.menuSelect(); lastMoveTime = now;
+            }
+        }
+    } else if (gameScreen === SCREENS.TITLE) {
+        if (keysHeld.up && now - lastMoveTime > CONFIG.moveDelay) {
+            titleSel = 0; sfx.menuSelect(); lastMoveTime = now;
+        }
+        if (keysHeld.down && now - lastMoveTime > CONFIG.moveDelay) {
+            titleSel = 1; sfx.menuSelect(); lastMoveTime = now;
+        }
+        if (keysPressed.enter || keysPressed.space) {
+            keysPressed.enter = false; keysPressed.space = false;
+            sfx.menuConfirm();
+            if (titleSel === 0) {
+                gameScreen = SCREENS.INTRO;
+                intro = { stage: 0, charIdx: 0, lastCharTime: now, lines: ["The world's politicians are out of control.", "Only one lobbyist can unite them all.", "That lobbyist is..."], nameInput: '', showName: false, goodluckTimer: 0, showGoodluck: false };
+            } else if (titleSel === 1 && hasSave) {
+                loadGame();
+            }
+        }
+    } else if (gameScreen === SCREENS.INTRO) {
+        updateIntro(now);
+        if (keysPressed.enter || keysPressed.space) {
+            keysPressed.enter = false; keysPressed.space = false;
+            advanceIntro();
+        }
+    } else if (gameScreen === SCREENS.OVERWORLD || gameScreen === SCREENS.LOBBY_HQ) {
+        if (shopOpen) {
+            // Shop takes total priority — only handleShopInput runs (escape handled internally)
+            handleShopInput(now);
+        } else {
+            // Escape toggles pause only when shop is closed
+            if (keysPressed.escape) {
+                keysPressed.escape = false;
+                pauseOpen = !pauseOpen;
+                if (!pauseOpen) pauseSubscreen = null;
+                sfx.menuSelect();
+            }
+            updateDialogue(now);
+            // Interaction key
+            if (keysPressed.enter || keysPressed.space) {
+                keysPressed.enter = false; keysPressed.space = false;
+                checkInteract();
+            }
+            // Movement: throttled, one step per moveDelay ms
+            if (!dlg.active && now - lastMoveTime >= CONFIG.moveDelay) {
+                let moved = false;
+                if (keysHeld.up)    { playerDirection = 'up';    moved = tryMove(0, -1); }
+                if (keysHeld.down)  { playerDirection = 'down';  moved = tryMove(0, 1); }
+                if (keysHeld.left)  { playerDirection = 'left';  moved = tryMove(-1, 0); }
+                if (keysHeld.right) { playerDirection = 'right'; moved = tryMove(1, 0); }
+                if (moved) lastMoveTime = now;
+            }
+        }
+        // Idle bob and camera always update
+        const idleMs = 800;
+        if (now - lastIdleBobTime > idleMs) {
+            playerIdleBob = Math.floor((now - lastIdleBobTime) / (idleMs / 2)) % 2 === 1;
+        }
+        updateCamera();
+    }
+
+    // --- DRAW ---
+    ctx.fillStyle = COLORS.black;
+    ctx.fillRect(0, 0, CONFIG.canvasWidth, CONFIG.canvasHeight);
+
+    if (gameScreen === SCREENS.BATTLE) {
+        drawBattle(now);
+    } else if (gameScreen === SCREENS.BLACKOUT) {
+        drawBlackout(now);
+    } else if (gameScreen === SCREENS.BATTLE_TRANSITION) {
+        // Draw overworld underneath, then flash transition on top
+        drawOverworld(now);
+        drawBattleTransition(now);
+    } else if (gameScreen === SCREENS.REGION_TRANSITION) {
+        drawRegionTransition(now);
+    } else if (gameScreen === SCREENS.VICTORY) {
+        drawVictoryScreen(now);
+    } else if (gameScreen === SCREENS.TITLE) {
+        drawTitle(now);
+    } else if (gameScreen === SCREENS.INTRO) {
+        drawIntro(now);
+    } else if (gameScreen === SCREENS.OVERWORLD || gameScreen === SCREENS.LOBBY_HQ) {
+        // Draw world (tiles + boss sprites + player)
+        drawOverworld(now);
+        // HUD
+        drawHUD();
+        // Dialogue
+        drawDialogue();
+        if (shopOpen) drawShop();
+        // Pause overlay
+        drawPauseMenu();
+    }
+
+    requestAnimationFrame(loop);
+}
+// === INIT ===
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

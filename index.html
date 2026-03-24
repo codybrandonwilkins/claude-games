@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wilkshake's Arcade</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #080c14;
+      --surface: #0f1623;
+      --border: #1e2d45;
+      --text: #c8d8f0;
+      --muted: #5a7090;
+      --gold: #ffd700;
+      --glow: rgba(255, 215, 0, 0.15);
+    }
+
+    body {
+      background-color: var(--bg);
+      background-image:
+        radial-gradient(ellipse at 20% 20%, rgba(30, 60, 120, 0.18) 0%, transparent 60%),
+        radial-gradient(ellipse at 80% 80%, rgba(80, 20, 120, 0.15) 0%, transparent 60%);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      padding: 0 0 80px;
+    }
+
+    /* ── HEADER ── */
+    header {
+      text-align: center;
+      padding: 64px 24px 48px;
+      position: relative;
+    }
+    header::after {
+      content: '';
+      display: block;
+      width: 180px;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--gold), transparent);
+      margin: 32px auto 0;
+    }
+
+    .arcade-title {
+      font-family: 'Press Start 2P', monospace;
+      font-size: clamp(18px, 4vw, 36px);
+      color: var(--gold);
+      letter-spacing: 0.04em;
+      line-height: 1.4;
+      text-shadow:
+        0 0 20px rgba(255, 215, 0, 0.6),
+        0 0 60px rgba(255, 215, 0, 0.2);
+      animation: flicker 8s infinite;
+    }
+
+    @keyframes flicker {
+      0%, 95%, 100% { opacity: 1; }
+      96% { opacity: 0.88; }
+      97% { opacity: 1; }
+      98% { opacity: 0.92; }
+    }
+
+    .arcade-subtitle {
+      margin-top: 20px;
+      font-family: 'Press Start 2P', monospace;
+      font-size: clamp(8px, 1.5vw, 11px);
+      color: var(--muted);
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      animation: blink 2s step-end infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0; }
+    }
+
+    /* ── GRID ── */
+    .game-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 24px;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    /* ── CARD ── */
+    .game-card {
+      display: flex;
+      flex-direction: column;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      text-decoration: none;
+      color: inherit;
+      transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+      position: relative;
+    }
+
+    .game-card:hover {
+      transform: translateY(-6px);
+      border-color: var(--card-accent);
+      box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 0 0 1px var(--card-accent), 0 0 30px var(--card-glow);
+    }
+
+    .game-card:hover .play-btn {
+      background: var(--card-accent);
+      color: #000;
+      box-shadow: 0 0 16px var(--card-glow);
+    }
+
+    /* Accent bar at top of card */
+    .card-accent-bar {
+      height: 4px;
+      background: var(--card-accent);
+      box-shadow: 0 0 12px var(--card-glow);
+    }
+
+    .card-body {
+      padding: 24px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .card-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 2px;
+    }
+
+    .tag {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 3px 8px;
+      border-radius: 99px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      color: var(--card-accent);
+    }
+
+    .badge-new {
+      font-size: 9px;
+      font-weight: 700;
+      font-family: 'Press Start 2P', monospace;
+      padding: 3px 7px;
+      border-radius: 4px;
+      background: var(--card-accent);
+      color: #000;
+      letter-spacing: 0;
+    }
+
+    .card-title {
+      font-family: 'Press Start 2P', monospace;
+      font-size: clamp(11px, 1.8vw, 14px);
+      color: #fff;
+      line-height: 1.5;
+      margin-top: 4px;
+    }
+
+    .card-desc {
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--muted);
+      flex: 1;
+    }
+
+    .play-btn {
+      margin-top: 16px;
+      display: inline-block;
+      width: 100%;
+      padding: 12px;
+      text-align: center;
+      border: 1px solid var(--card-accent);
+      border-radius: 6px;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 11px;
+      color: var(--card-accent);
+      background: transparent;
+      transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+      letter-spacing: 0.05em;
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      text-align: center;
+      margin-top: 72px;
+      font-family: 'Press Start 2P', monospace;
+      font-size: 9px;
+      color: var(--muted);
+      line-height: 2;
+      letter-spacing: 0.05em;
+    }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 500px) {
+      .game-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1 class="arcade-title">WILKSHAKE'S ARCADE</h1>
+    <p class="arcade-subtitle">▶ INSERT COIN TO PLAY ◀</p>
+  </header>
+
+  <main class="game-grid">
+
+    <!--
+    ╔══════════════════════════════════════════════╗
+    ║  TO ADD A NEW GAME: copy one card block      ║
+    ║  below and update: href, card-accent color,  ║
+    ║  card-glow color, tags, title, and desc.     ║
+    ╚══════════════════════════════════════════════╝
+    -->
+
+    <!-- CROSSY ROAD -->
+    <a class="game-card" href="crossy-road.html"
+       style="--card-accent:#3ec43e; --card-glow:rgba(62,196,62,0.25);">
+      <div class="card-accent-bar"></div>
+      <div class="card-body">
+        <div class="card-tags">
+          <span class="tag">Arcade</span>
+          <span class="tag">Endless</span>
+          <span class="badge-new">NEW</span>
+        </div>
+        <div class="card-title">CROSSY ROAD</div>
+        <p class="card-desc">Guide your lizard across busy roads, raging rivers, and speeding trains. Don't get left behind — the screen never stops scrolling.</p>
+        <div class="play-btn">▶ PLAY</div>
+      </div>
+    </a>
+
+    <!-- DUNGEON DEPTHS -->
+    <a class="game-card" href="dungeon-depths.html"
+       style="--card-accent:#7c3aed; --card-glow:rgba(124,58,237,0.25);">
+      <div class="card-accent-bar"></div>
+      <div class="card-body">
+        <div class="card-tags">
+          <span class="tag">Roguelike</span>
+          <span class="tag">Turn-Based</span>
+        </div>
+        <div class="card-title">DUNGEON DEPTHS</div>
+        <p class="card-desc">Descend into a procedurally generated dungeon. Fight monsters, collect loot, and survive as long as you can in this tactical roguelike.</p>
+        <div class="play-btn">▶ PLAY</div>
+      </div>
+    </a>
+
+    <!-- PAPA'S SHOOTERIA -->
+    <a class="game-card" href="papas-shooteria.html"
+       style="--card-accent:#f97316; --card-glow:rgba(249,115,22,0.25);">
+      <div class="card-accent-bar"></div>
+      <div class="card-body">
+        <div class="card-tags">
+          <span class="tag">Shooter</span>
+          <span class="tag">Survival</span>
+          <span class="badge-new">NEW</span>
+        </div>
+        <div class="card-title">PAPA'S SHOOTERIA</div>
+        <p class="card-desc">Survive the pizza monsters! A chaotic top-down shooter where waves of dangerous ingredients are out to ruin your day.</p>
+        <div class="play-btn">▶ PLAY</div>
+      </div>
+    </a>
+
+    <!-- POLITI-MON -->
+    <a class="game-card" href="politi-mon.html"
+       style="--card-accent:#3b82f6; --card-glow:rgba(59,130,246,0.25);">
+      <div class="card-accent-bar"></div>
+      <div class="card-body">
+        <div class="card-tags">
+          <span class="tag">RPG</span>
+          <span class="tag">Strategy</span>
+        </div>
+        <div class="card-title">POLITI-MON</div>
+        <p class="card-desc">Gotta lobby 'em all! A Pokémon-inspired political battle game. Build your party of politicians and fight for the vote.</p>
+        <div class="play-btn">▶ PLAY</div>
+      </div>
+    </a>
+
+  </main>
+
+  <footer>
+    <p>WILKSHAKE'S ARCADE &nbsp;·&nbsp; ALL GAMES PLAYABLE IN BROWSER</p>
+    <p style="margin-top:8px; font-size:8px;">BUILT WITH CLAUDE</p>
+  </footer>
+
+</body>
+</html>

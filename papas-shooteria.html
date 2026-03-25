@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Papa's Shooteria</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -13,12 +14,19 @@ body {
     height: 100vh;
     overflow: hidden;
     font-family: 'Arial Black', Arial, sans-serif;
+    touch-action: none;
 }
 #wrap {
     position: relative;
-    width: 800px;
-    height: 600px;
     box-shadow: 0 0 40px rgba(0,0,0,0.8);
+}
+.pbtn {
+    width: 58px; height: 58px; margin: 3px;
+    background: rgba(0,0,0,0.55); border: 2px solid rgba(255,180,100,0.4);
+    border-radius: 10px; color: #fff; font-size: 22px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; touch-action: none; -webkit-tap-highlight-color: transparent;
+    user-select: none; -webkit-user-select: none;
 }
 canvas { display: block; }
 #menu, #gameover, #wavebanner {
@@ -92,6 +100,20 @@ canvas { display: block; }
 <div id="wavebanner">
     <div class="wavetxt" id="waveTxt"></div>
 </div>
+
+<!-- Mobile controls (shown only on touch devices) -->
+<div id="mctrls" style="display:none;position:absolute;inset:0;pointer-events:none;z-index:15;">
+  <!-- Left: D-pad -->
+  <div style="position:absolute;bottom:16px;left:16px;pointer-events:all;">
+    <div style="display:flex;justify-content:center;"><div class="pbtn" id="pb-fwd">▲</div></div>
+    <div style="display:flex;"><div class="pbtn" id="pb-tlt">◀</div><div class="pbtn" id="pb-bk">▼</div><div class="pbtn" id="pb-trt">▶</div></div>
+  </div>
+  <!-- Right: Fire + Reload -->
+  <div style="position:absolute;bottom:16px;right:16px;pointer-events:all;display:flex;flex-direction:column;align-items:center;gap:8px;">
+    <div class="pbtn" id="pb-rel" style="background:rgba(60,30,0,0.7);border-color:rgba(255,200,100,0.4);font-size:12px;">RLD</div>
+    <div class="pbtn" id="pb-fire" style="width:80px;height:80px;border-radius:50%;background:rgba(180,20,0,0.7);border-color:rgba(255,100,50,0.6);font-size:14px;font-weight:900;">FIRE</div>
+  </div>
+</div>
 </div>
 
 <script>
@@ -153,6 +175,13 @@ let enemies = [];
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
+// ─── Mobile scaling ───────────────────────────────────────────────────────────
+function fitGame(){const s=Math.min(window.innerWidth/W,window.innerHeight/H,1);canvas.style.width=(W*s)+'px';canvas.style.height=(H*s)+'px';}
+window.addEventListener('resize',fitGame);fitGame();
+const mctrls=document.getElementById('mctrls');
+const isMobile='ontouchstart' in window;
+if(isMobile)mctrls.style.display='block';
+
 // Offscreen for floor/ceiling
 const floorCanvas = document.createElement('canvas');
 floorCanvas.width = W; floorCanvas.height = H;
@@ -196,6 +225,20 @@ canvas.addEventListener('mousedown', e => {
 
 document.getElementById('startBtn').addEventListener('click', startGame);
 document.getElementById('retryBtn').addEventListener('click', startGame);
+
+// ─── Mobile button handlers ───────────────────────────────────────────────────
+function mBtn(id,downFn,upFn){
+  const el=document.getElementById(id);
+  if(!el)return;
+  el.addEventListener('touchstart',e=>{e.preventDefault();downFn();},{passive:false});
+  if(upFn)el.addEventListener('touchend',e=>{e.preventDefault();upFn();},{passive:false});
+}
+mBtn('pb-fwd',()=>{keys['KeyW']=true;},()=>{keys['KeyW']=false;});
+mBtn('pb-bk', ()=>{keys['KeyS']=true;},()=>{keys['KeyS']=false;});
+mBtn('pb-tlt',()=>{keys['ArrowLeft']=true;},()=>{keys['ArrowLeft']=false;});
+mBtn('pb-trt',()=>{keys['ArrowRight']=true;},()=>{keys['ArrowRight']=false;});
+mBtn('pb-fire',()=>{tryShoot();});
+mBtn('pb-rel', ()=>{tryReload();});
 
 // ─── Game control ─────────────────────────────────────────────────────────────
 function startGame() {

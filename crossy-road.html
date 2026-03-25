@@ -2,15 +2,26 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Crossy Road</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
-body { background:#111; display:flex; align-items:center; justify-content:center; height:100vh; overflow:hidden; }
+body { background:#111; display:flex; align-items:center; justify-content:center; height:100vh; overflow:hidden; touch-action:none; }
+#wrap { position:relative; }
 canvas { display:block; image-rendering:pixelated; image-rendering:crisp-edges; }
+#dpad { position:absolute; bottom:12px; left:50%; transform:translateX(-50%); display:none; user-select:none; -webkit-user-select:none; }
+.drow { display:flex; justify-content:center; }
+.dbtn { width:60px; height:60px; background:rgba(0,0,0,0.45); border:2px solid rgba(255,255,255,0.35); border-radius:10px; color:#fff; font-size:24px; line-height:60px; text-align:center; margin:3px; cursor:pointer; touch-action:none; -webkit-tap-highlight-color:transparent; }
 </style>
 </head>
 <body>
+<div id="wrap">
 <canvas id="gc" width="800" height="600"></canvas>
+<div id="dpad">
+  <div class="drow"><div class="dbtn" id="dbu">▲</div></div>
+  <div class="drow"><div class="dbtn" id="dbl">◀</div><div class="dbtn" id="dbd">▼</div><div class="dbtn" id="dbr">▶</div></div>
+</div>
+</div>
 <script>
 // ===== CROSSY ROAD =====
 // Coordinate system: row numbers INCREASE going NORTH (forward).
@@ -20,6 +31,15 @@ canvas { display:block; image-rendering:pixelated; image-rendering:crisp-edges; 
 
 const canvas = document.getElementById('gc');
 const ctx = canvas.getContext('2d');
+const dpad = document.getElementById('dpad');
+
+function fitCanvas() {
+  const s = Math.min(window.innerWidth / 800, window.innerHeight / 600, 1);
+  canvas.style.width  = (800 * s) + 'px';
+  canvas.style.height = (600 * s) + 'px';
+}
+window.addEventListener('resize', fitCanvas);
+fitCanvas();
 
 const W = 800, H = 600;
 const CELL = 64;
@@ -322,6 +342,33 @@ canvas.addEventListener('click',e=>{
 });
 
 function startGame(){initGame();gs='playing';}
+
+// ===== TOUCH SUPPORT =====
+function touchToCanvas(touch) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (touch.clientX - r.left) * (W / r.width),
+    y: (touch.clientY - r.top)  * (H / r.height)
+  };
+}
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  initAc();
+  const {x:mx, y:my} = touchToCanvas(e.touches[0]);
+  if(gs==='title'){startGame();return;}
+  if(gs==='gameOver'){
+    if(inBtn(mx,my,192,368,196,48)){startGame();return;}
+    if(inBtn(mx,my,452,368,172,48)){gs='shop';shopTab='skins';return;}
+    startGame();
+  } else if(gs==='shop'){
+    handleShopClick(mx,my);
+  }
+}, {passive:false});
+function dpadDir(dir){initAc();if(gs==='playing')kbuf=dir;}
+document.getElementById('dbu').addEventListener('touchstart',e=>{e.preventDefault();dpadDir('up');},{passive:false});
+document.getElementById('dbd').addEventListener('touchstart',e=>{e.preventDefault();dpadDir('dn');},{passive:false});
+document.getElementById('dbl').addEventListener('touchstart',e=>{e.preventDefault();dpadDir('lt');},{passive:false});
+document.getElementById('dbr').addEventListener('touchstart',e=>{e.preventDefault();dpadDir('rt');},{passive:false});
 
 // ===== PERSIST =====
 function saveData() {
@@ -997,6 +1044,7 @@ function update() {
 
 // ===== DRAW =====
 function draw() {
+  dpad.style.display = gs==='playing' ? 'block' : 'none';
   ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over';
   ctx.clearRect(0,0,W,H);
   ctx.save(); ctx.translate(shake.x,shake.y);

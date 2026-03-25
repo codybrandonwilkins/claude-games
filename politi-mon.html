@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Politi-Mon: Gotta Lobby 'Em All</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -13,6 +13,8 @@
             min-height: 100vh;
             background-color: #1a1a2e;
             font-family: Arial, sans-serif;
+            overflow: hidden;
+            touch-action: none;
         }
         #gameContainer { background-color: #000; border: 4px solid #2C3E50; }
         canvas { display: block; background-color: #000; }
@@ -299,6 +301,8 @@ let gameScreen = SCREENS.TITLE;
 let prevScreen = SCREENS.OVERWORLD;
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
+function fitCanvas(){const s=Math.min(window.innerWidth/CONFIG.canvasWidth,window.innerHeight/CONFIG.canvasHeight,1);canvas.style.width=(CONFIG.canvasWidth*s)+'px';canvas.style.height=(CONFIG.canvasHeight*s)+'px';}
+window.addEventListener('resize',fitCanvas);fitCanvas();
 // === INPUT STATE ===
 // Keys held down
 const keysHeld = { up: false, down: false, left: false, right: false };
@@ -3039,6 +3043,34 @@ canvas.addEventListener('click', e => {
         introPresetClick(cx, cy);
     }
 });
+// === TOUCH SUPPORT ===
+let ptx=0,pty=0;
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  initAudio();
+  const t=e.touches[0];
+  ptx=t.clientX;pty=t.clientY;
+  // Simulate click using same coordinate logic as the click handler
+  const rect=canvas.getBoundingClientRect();
+  const scaleX=CONFIG.canvasWidth/rect.width,scaleY=CONFIG.canvasHeight/rect.height;
+  const cx=(t.clientX-rect.left)*scaleX,cy=(t.clientY-rect.top)*scaleY;
+  if(gameScreen===SCREENS.BATTLE){handleBattleClick(cx,cy);return;}
+  if(gameScreen===SCREENS.TITLE){
+    [0,1].forEach(i=>{const bx=300,by=330+i*70,bw=200,bh=44;if(cx>=bx&&cx<=bx+bw&&cy>=by&&cy<=by+bh){const disabled=i===1&&!hasSave;if(!disabled){titleSel=i;sfx.menuConfirm();if(i===0){gameScreen=SCREENS.INTRO;intro={stage:0,charIdx:0,lastCharTime:performance.now(),lines:intro.lines,nameInput:'',showName:false,goodluckTimer:0,showGoodluck:false};}else{loadGame();}}}});
+  }else if(gameScreen===SCREENS.INTRO){introPresetClick(cx,cy);}
+},{passive:false});
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  if(!e.changedTouches.length)return;
+  const t=e.changedTouches[0];
+  const dx=t.clientX-ptx,dy=t.clientY-pty;
+  const adx=Math.abs(dx),ady=Math.abs(dy);
+  if(Math.max(adx,ady)>40&&(gameScreen===SCREENS.OVERWORLD||gameScreen===SCREENS.LOBBY_HQ)){
+    if(adx>ady){if(dx>0){keysHeld.right=true;setTimeout(()=>{keysHeld.right=false;},150);}else{keysHeld.left=true;setTimeout(()=>{keysHeld.left=false;},150);}}
+    else{if(dy>0){keysHeld.down=true;setTimeout(()=>{keysHeld.down=false;},150);}else{keysHeld.up=true;setTimeout(()=>{keysHeld.up=false;},150);}}
+  }
+},{passive:false});
+
 // === MAIN GAME LOOP ===
 let lastFrame = 0;
 function loop(now) {

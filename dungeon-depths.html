@@ -2,10 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Dungeon Depths</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#0a0a12;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden;font-family:monospace}
+body{background:#0a0a12;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden;font-family:monospace;touch-action:none}
 canvas{display:block;image-rendering:pixelated;cursor:default}
 </style>
 </head>
@@ -37,14 +38,43 @@ let transitionAlpha=1;
 let cheatFlashTimer=0; // for CODY cheat code flash text
 let cheatCooldown=0; // prevent rapid re-triggers
 
+// ===== CANVAS SCALING =====
+function fitCanvas(){const s=Math.min(window.innerWidth/W,window.innerHeight/H,1);canvas.style.width=(W*s)+'px';canvas.style.height=(H*s)+'px';}
+window.addEventListener('resize',fitCanvas);fitCanvas();
+function canvasPos(clientX,clientY){const r=canvas.getBoundingClientRect();return{x:(clientX-r.left)*(W/r.width),y:(clientY-r.top)*(H/r.height)};}
+
 // ===== INPUT =====
 const keys={};
 const mouse={x:0,y:0,clicked:false,down:false};
 document.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;e.preventDefault()});
 document.addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false});
-canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top});
+canvas.addEventListener('mousemove',e=>{const p=canvasPos(e.clientX,e.clientY);mouse.x=p.x;mouse.y=p.y});
 canvas.addEventListener('mousedown',()=>{mouse.down=true;mouse.clicked=true});
 canvas.addEventListener('mouseup',()=>{mouse.down=false});
+
+// ===== TOUCH SUPPORT =====
+let touchStartX=0,touchStartY=0;
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  initAudio();
+  const t=e.touches[0];
+  const p=canvasPos(t.clientX,t.clientY);
+  mouse.x=p.x;mouse.y=p.y;mouse.down=true;mouse.clicked=true;
+  touchStartX=t.clientX;touchStartY=t.clientY;
+},{passive:false});
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  mouse.down=false;
+  if(e.changedTouches.length===0)return;
+  const t=e.changedTouches[0];
+  const dx=t.clientX-touchStartX,dy=t.clientY-touchStartY;
+  const adx=Math.abs(dx),ady=Math.abs(dy);
+  if(Math.max(adx,ady)>40){
+    if(adx>ady){keys[dx>0?'arrowright':'arrowleft']=true;}
+    else{keys[dy>0?'arrowdown':'arrowup']=true;}
+    setTimeout(()=>{keys['arrowup']=keys['arrowdown']=keys['arrowleft']=keys['arrowright']=false;},80);
+  }
+},{passive:false});
 
 function consumeClick(){if(mouse.clicked&&!isTransitioning()){mouse.clicked=false;return true}return false}
 function keyPressed(k){if(keys[k]){keys[k]=false;return true}return false}
